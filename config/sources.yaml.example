@@ -1,0 +1,98 @@
+# podcastfeeds source configuration — EXAMPLE / TEMPLATE.
+#
+# Copy this to `config/sources.yaml` (git-ignored) and edit it with your own
+# feeds. The app reads sources.yaml if present, otherwise falls back to this
+# example so a fresh clone still boots.
+#
+# Source types:
+#   rss      — every new entry becomes an episode (existing audio enclosures pass
+#              through; text-only entries are read aloud with TTS)
+#   digest   — entries since the last run (across all `urls`) are merged into ONE
+#              narrated, LLM-rephrased summary episode, built on the cron `schedule`
+#   breaking — poll a news site and emit an episode only for items it flags breaking
+#   inbox    — virtual source for URLs you share from your phone (always exists)
+#
+# Per-source fields (see app/config.py:SourceDef for the full list):
+#   voice                 fixed TTS voice; leave empty to let the persistent
+#                         roster assign (and remember) one per source/author
+#   language              da | en | auto
+#   poll_minutes          how often to poll (rss/breaking)
+#   max_items_per_poll    cap new episodes created per poll
+#   schedule              cron string (digest sources only)
+#   prefer_existing_audio pass through the feed's own audio enclosure if present;
+#                         set false to force our TTS (needed for quotes/images/chapters)
+#   title_filter          regex; entries whose title doesn't match are skipped
+#   llm_filter            criteria prose; entries are LLM-classified, non-matches skipped
+#   narrate_mode          full (read the article) | summary (LLM overview + show notes)
+#   danish_perspective    append an Opus-written "view from Denmark" closer
+#   el_voice              ElevenLabs voice_id for this source (when EL is enabled)
+
+meta:
+  author: "My Reader"
+  inbox_name: "Inbox – shared articles"
+  # Screenshot conversations: map a speaker name (as shown in tweets/chats,
+  # lowercase) to a roster key so they are read in that existing voice.
+  speaker_aliases:
+    "example author": exampleblog
+
+defaults:
+  retention_days: 60
+  poll_minutes: 30
+  max_items_per_poll: 3
+
+sources:
+  # ── A digest that merges several feeds into one daily narrated summary ──
+  - slug: tech-digest
+    name: "Tech Digest"
+    type: digest
+    urls:
+      - https://example.com/feed.xml
+      - https://another-example.com/rss
+    language: en
+    voice: en-GB-RyanNeural        # fixed: a single narrator for the digest
+    schedule: "0 7 * * *"          # 07:00 daily
+    digest_max_items: 12
+    description: "Daily rephrased digest across a few feeds"
+
+  # ── Individual episodes, filtered by an LLM to only the items you care about ──
+  - slug: releases
+    name: "Release Watch"
+    type: rss
+    urls:
+      - https://example.com/feed.xml
+    llm_filter: >
+      A major product release or genuine breakthrough. NOT minor/incremental
+      updates, opinion pieces, funding/business news, or tutorials.
+    narrate_mode: summary
+    language: en
+    voice: en-GB-RyanNeural
+    poll_minutes: 20
+    max_items_per_poll: 3
+    prefer_existing_audio: false
+    description: "Only the big releases, within the hour"
+
+  # ── A blog read in full with multi-voice narration, quotes, images, chapters ──
+  - slug: exampleblog
+    name: "Example Blog"
+    type: rss
+    url: https://example.substack.com/feed
+    language: en
+    prefer_existing_audio: false   # force TTS so quotes/images/chapters apply
+    poll_minutes: 60
+    max_items_per_poll: 2
+    danish_perspective: true       # Opus-written "view from Denmark" closer
+    description: "A blog, narrated with quotes and figures"
+
+  # ── Explicit inbox entry (normally implicit) so shared articles also get
+  #    the Danish-perspective closer ──────────────────────────────────────
+  - slug: inbox
+    name: "Inbox – shared articles"
+    type: inbox
+    danish_perspective: true
+    description: "Articles shared from your phone"
+
+  # Paid Substack posts: add the publication's *.substack.com/feed URL here and
+  # put a session cookie in config/secrets.yaml (see secrets.yaml.example). Use
+  # the *.substack.com host, not a custom domain — the cookie is scoped to
+  # substack.com, so custom domains would not receive it and paid posts fail.
+  # - {slug: yourpaidsub, name: "Your Paid Sub", type: rss, url: "https://yourpaidsub.substack.com/feed", language: en, prefer_existing_audio: false, poll_minutes: 180, max_items_per_poll: 2, danish_perspective: true}

@@ -1,0 +1,68 @@
+"""Substack content via the public post API.
+
+Fetching the API on {subdomain}.substack.com (rather than scraping the web
+page) is robust in three ways the HTML path is not:
+  * it stays on substack.com, so the substack.com session cookie always
+    applies — custom-domain publications (slowboring.com etc.) 301-redirect
+    their web pages and drop the cookie, paywalling paid posts;
+  * the `audience` field ("everyone" / "only_paid" / "founding") is a
+    definitive paid/free signal — no guessing from paywall text;
+  * `body_html` is clean article HTML.
+"""
+from __future__ import annotations
+
+import logging
+from urllib.parse import urlparse
+
+import httpx
+
+from .config import SourceDef
+from .extract import UA, _cookie_for, is_paywalled
+
+log = logging.getLogger("podcastfeeds")
+
+
+def substack_ref(source: SourceDef, link: str) -> tuple[str, str] | None:
+    """Return (subdomain, slug) if this source+link is a Substack post, else None."""
+    feed_host = urlparse(source.url).netloc
+    if not feed_host.endswith(".substack.com"):
+        return None
+    sub = feed_host[: -len(".substack.com")]
+    path = urlparse(link).path
+    if "/p/" not in path:
+        return None
+    slug = path.rstrip("/").split("/")[-1]
+    return (sub, slug) if slug else None
+
+
+async def fetch_post(sub: str, slug: str) -> dict | None:
+    """Return {title, body_html, cover_image, audience, accessible} or None."""
+    url = f"https://{sub}.substack.com/api/v1/posts/{slug}"
+    headers = {"User-Agent": UA, "Accept": "application/json"}
+    cookie = _cookie_for(f"https://{sub}.substack.com/")
+    if cookie:
+        headers["Cookie"] = cookie
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30,
+                                     headers=headers) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        log.warning("substack API failed for %s/%s: %s", sub, slug, exc)
+        return None
+    body_html = data.get("body_html") or ""
+    audience = data.get("audience") or "everyone"
+    # Accessible = free post, or a paid post whose full body came back (i.e. the
+    # cookie is a subscriber). A non-subscriber gets a short truncated preview
+    # that still carries a paywall CTA.
+    accessible = audience == "everyone" or (
+        bool(body_html) and not is_paywalled("", body_html)
+    )
+    return {
+        "title": data.get("title") or "",
+        "body_html": body_html,
+        "cover_image": data.get("cover_image") or "",
+        "audience": audience,
+        "accessible": accessible,
+    }

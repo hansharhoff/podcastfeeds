@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>podcastfeeds</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  td, th { padding: .4rem .5rem; border-bottom: 1px solid #8884; text-align: left; vertical-align: top; }
+  .status-ready { color: #2e9e44; } .status-error { color: #d33; }
+  .status-pending, .status-processing { color: #b8860b; }
+  input[type=url], input[type=text] { width: 100%; padding: .5rem; box-sizing: border-box; }
+  button { padding: .45rem .9rem; cursor: pointer; }
+  form.submit-form { display: grid; gap: .5rem; margin: .5rem 0 1rem; }
+  .feedurl { font-family: monospace; font-size: .78rem; word-break: break-all; }
+  .row-actions form { display: inline; }
+  .row-actions button { padding: .2rem .45rem; }
+  small.muted { opacity: .65; }
+  tr.skipped { opacity: .55; }
+  h3 { margin: 1.4rem 0 .3rem; font-size: 1rem; }
+  details { margin: .3rem 0; border-bottom: 1px solid #8883; }
+  summary { cursor: pointer; padding: .4rem 0; font-weight: 600; }
+  summary:hover { opacity: .8; }
+</style>
+</head>
+<body>
+<h1>🎙 podcastfeeds</h1>
+
+<h2>Share an article</h2>
+<form class="submit-form" method="post" action="/{{ token }}/api/submit">
+  <input type="url" name="url" placeholder="https://… article URL" required>
+  <label>Voice:
+    <select name="language">
+      <option value="auto" selected>Auto-detect</option>
+      <option value="da">Danish</option>
+      <option value="en">English</option>
+    </select>
+  </label>
+  <button type="submit">Queue for listening</button>
+</form>
+<form method="post" action="/{{ token }}/api/poll">
+  <button type="submit">Poll all sources now</button>
+</form>
+
+<details data-key="feeds">
+<summary><strong>Feeds</strong> <small class="muted">— subscribe in your podcast app ({{ feeds|length }})</small></summary>
+<table>
+  {% for f in feeds %}
+  <tr><td>{{ f.name }}</td><td class="feedurl">{{ f.url }}</td></tr>
+  {% endfor %}
+</table>
+</details>
+
+<details data-key="roster">
+<summary><strong>Voice roster</strong> <small class="muted">({{ (fixed_voices|length) + (roster|length) }} assignments)</small></summary>
+<p><small class="muted">Each source/blogger keeps its assigned voice forever. Fixed voices come from <code>config/sources.yaml</code>.</small></p>
+<table>
+  {% for slug, v in fixed_voices.items() %}
+  <tr><td>{{ slug }}</td><td>{{ v }}</td><td><small class="muted">fixed</small></td></tr>
+  {% endfor %}
+  {% for key, v in roster.items() %}
+  <tr><td>{{ key }}</td><td>{{ v }}</td><td><small class="muted">roster</small></td></tr>
+  {% endfor %}
+</table>
+</details>
+
+<details data-key="elevenlabs">
+<summary><strong>ElevenLabs voices</strong> <small class="muted">
+  {% if el.configured %}({{ (el.used/1000)|round(1) }}k / {{ (el.budget/1000)|round(0)|int }}k chars used this month · {{ (el.remaining/1000)|round(1) }}k left){% else %}(no API key set){% endif %}
+</small></summary>
+{% if el.configured %}
+<p><small class="muted">Toggle a source to render its main voice with ElevenLabs. Hard cap: once the monthly budget (or your ElevenLabs plan quota) is reached, it falls back to edge-tts automatically — no overage.</small></p>
+<table>
+  {% for s in el.sources %}
+  <tr>
+    <td>{{ s.name }} <small class="muted">({{ s.slug }})</small></td>
+    <td>{% if s.on %}<span class="status-ready">ElevenLabs</span>{% else %}<small class="muted">edge-tts</small>{% endif %}</td>
+    <td class="row-actions"><form method="post" action="/{{ token }}/api/eltoggle/{{ s.slug }}"><button>{{ "disable" if s.on else "enable" }}</button></form></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<p><small class="muted">Set <code>ELEVENLABS_API_KEY</code> in <code>.env</code> and restart to enable.</small></p>
+{% endif %}
+</details>
+
+<h2>How to use</h2>
+<ul>
+  <li><strong>Listen:</strong> subscribe to a feed URL above in Pocket Casts (Discover → paste URL in search). Subscribe to <em>either</em> "All feeds" <em>or</em> individual feeds — both gives duplicates.</li>
+  <li><strong>Share an article from the phone:</strong> paste its URL in the form above, or install the <a href="https://http-shortcuts.rmy.ch/">HTTP Shortcuts</a> app and create a shortcut with method POST, URL <code>{{ base }}/{{ token }}/api/submit</code>, request body type <em>form parameters</em>, one parameter <code>url</code> = <code>&#123;&#123;share_text&#125;&#125;</code> (a "share text" variable), then enable "Allow sharing to this shortcut". Articles land in the Inbox feed a few minutes later.</li>
+  <li><strong>Add/remove sources:</strong> edit <code>config/sources.yaml</code> in the repo and <code>docker compose restart</code>. Types: <code>rss</code> (each post = episode), <code>digest</code> (many items → one rephrased episode on a cron schedule).</li>
+  <li><strong>Voices:</strong> leave <code>voice</code> empty for an automatic, permanent per-source/blogger voice; quotes inside articles are read by a second voice. Set <code>voice</code> to fix one (news = en-GB-RyanNeural, Home Assistant = en-GB-ThomasNeural).</li>
+  <li><strong>Images:</strong> narration announces figures; the images appear in the episode show notes and as chapter art (tap the artwork / chapter list while playing).</li>
+  <li><strong>Errors:</strong> failed episodes show a retry button in the list below. Logs: <code>docker compose logs -f</code>.</li>
+</ul>
+
+{% if decisions %}
+<h2>⚠️ Needs your decision</h2>
+<p><small class="muted">Ready episodes that look unusually short — possibly a paywall stub or thin content. Keep it, or regenerate/flag it.</small></p>
+<table>
+  {% for ep in decisions %}
+  <tr>
+    <td><a href="/{{ token }}/episode/{{ ep.id }}">{{ ep.title }}</a> <small class="muted">({{ ep.source_slug }}, {{ ep.audio_seconds }}s)</small></td>
+    <td class="row-actions">
+      <form method="post" action="/{{ token }}/api/dismiss/{{ ep.id }}"><button title="keep as-is">keep</button></form>
+      {% if not ep.guid.startswith('digest:') %}
+      <form method="post" action="/{{ token }}/api/redo/{{ ep.id }}" onsubmit="return confirm('Regenerate with the latest pipeline?')"><button>↻ redo</button></form>
+      {% endif %}
+      <form method="post" action="/{{ token }}/api/feedback/{{ ep.id }}"><button name="verdict" value="👎">👎</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>Recent episodes</h2>
+<p><small class="muted">Grouped by source, exactly as the pipeline groups them; skipped rows show what dedup/filtering/watermark removed. Click a source to expand. 👍/👎 stores feedback; ↻ regenerates with the latest pipeline.</small></p>
+{% for slug, g in groups.items() %}
+<details data-key="src:{{ slug }}" {% if g.episodes|length <= 4 %}open{% endif %}>
+<summary>{{ g.name }} <small class="muted">({{ slug }}) — {{ g.ready }} ready / {{ g.episodes|length }} total</small></summary>
+<table>
+  {% for ep in g.episodes %}
+  <tr class="{% if ep.status == 'skipped' %}skipped{% endif %}">
+    <td>
+      <a href="/{{ token }}/episode/{{ ep.id }}">{{ ep.title }}</a>
+      {% if ep.status == 'skipped' %}<br><small class="muted">{{ ep.description }}</small>{% endif %}
+      {% if ep.error %}<br><small class="muted">{{ ep.error }}</small>{% endif %}
+      {% if ep.feedback %}<br><small class="muted">feedback: {{ ep.feedback.split('\n')[0] }}</small>{% endif %}
+    </td>
+    <td class="status-{{ ep.status }}">{{ ep.status }}</td>
+    <td>{% if ep.audio_seconds %}{{ ep.audio_seconds // 60 }}m{% elif ep.audio_url %}ext{% endif %}</td>
+    <td class="row-actions">
+      {% if ep.status == 'error' %}
+      <form method="post" action="/{{ token }}/api/retry/{{ ep.id }}"><button>retry</button></form>
+      {% endif %}
+      {% if ep.status == 'ready' %}
+      <form method="post" action="/{{ token }}/api/feedback/{{ ep.id }}"><button name="verdict" value="👍">👍</button></form>
+      <form method="post" action="/{{ token }}/api/feedback/{{ ep.id }}"><button name="verdict" value="👎">👎</button></form>
+      {% if not ep.guid.startswith('digest:') %}
+      <form method="post" action="/{{ token }}/api/redo/{{ ep.id }}" onsubmit="return confirm('Regenerate this episode with the latest pipeline?')"><button title="redo with latest pipeline">↻</button></form>
+      {% endif %}
+      {% endif %}
+      {% if ep.status == 'skipped' and not ep.guid.startswith('digest:') %}
+      <form method="post" action="/{{ token }}/api/unskip/{{ ep.id }}" onsubmit="return confirm('Un-skip and generate this episode?')"><button title="un-skip: generate this episode">▶ unskip</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</details>
+{% endfor %}
+
+<script>
+(function () {
+  // Remember each section's collapsed/expanded state across the POST→redirect
+  // reloads that the action buttons trigger.
+  document.querySelectorAll('details[data-key]').forEach(function (d) {
+    var key = 'det:' + d.dataset.key;
+    var saved = localStorage.getItem(key);
+    if (saved !== null) d.open = (saved === '1');
+    d.addEventListener('toggle', function () {
+      localStorage.setItem(key, d.open ? '1' : '0');
+    });
+  });
+  // Preserve scroll position so unskip/redo/feedback don't jump to the top.
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  try {
+    var y = sessionStorage.getItem('scrollY');
+    if (y !== null) { window.scrollTo(0, parseInt(y, 10)); sessionStorage.removeItem('scrollY'); }
+  } catch (e) {}
+  document.querySelectorAll('form').forEach(function (f) {
+    f.addEventListener('submit', function () {
+      try { sessionStorage.setItem('scrollY', String(window.scrollY)); } catch (e) {}
+    });
+  });
+})();
+</script>
+</body>
+</html>

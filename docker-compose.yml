@@ -1,0 +1,24 @@
+services:
+  podcastfeeds:
+    build: .
+    container_name: podcastfeeds
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+      - ./config:/config
+    environment:
+      - TZ=Europe/Copenhagen
+      # Public URL the feed advertises (the Tailscale Funnel hostname):
+      - BASE_URL=${BASE_URL:-}
+      # Optional: pin the secret; otherwise one is generated into data/token.txt
+      - TOKEN=${TOKEN:-}
+      # LLM shim on the host (scripts/llm_shim.py) for rephrased digests/summaries:
+      - LLM_URL=${LLM_URL:-http://host.docker.internal:8765}
+      # ElevenLabs TTS (per-source opt-in; hard monthly char cap):
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - ELEVENLABS_CHAR_BUDGET=${ELEVENLABS_CHAR_BUDGET:-1000000}
+      - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_flash_v2_5}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

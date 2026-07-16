@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+.env
+config/secrets*.yaml
+!config/secrets.yaml.example
+# Real source config lists your private subscriptions — keep it local.
+config/sources.yaml

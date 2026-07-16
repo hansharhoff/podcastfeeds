@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ ep.title }} – script</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 1rem; }
+  h1 { font-size: 1.2rem; }
+  .block { margin: .8rem 0; padding: .6rem .8rem; border-left: 3px solid #8886; }
+  .block .voice { font-size: .75rem; opacity: .6; font-family: monospace; }
+  .chapter { font-size: .8rem; color: #b8860b; }
+  pre { white-space: pre-wrap; font-family: inherit; margin: .3rem 0 0; }
+  dl { font-size: .85rem; } dt { font-weight: 600; margin-top: .5rem; } dd { margin: 0; font-family: monospace; word-break: break-all; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 4rem; }
+</style>
+</head>
+<body>
+<p><a href="/{{ token }}/">← back</a></p>
+<h1>{{ ep.title }}</h1>
+<p><small>{{ ep.status }} · {{ ep.audio_seconds }}s · voice {{ ep.voice }}{% if ep.link %} · <a href="{{ ep.link }}">original</a>{% endif %}</small></p>
+
+<h2>Feedback</h2>
+<form method="post" action="/{{ token }}/api/feedback/{{ ep.id }}">
+  <textarea name="note" placeholder="What was wrong / right? (goes to the iteration log)"></textarea>
+  <button name="verdict" value="👍">👍 send</button>
+  <button name="verdict" value="👎">👎 send</button>
+</form>
+{% if ep.feedback %}<pre>{{ ep.feedback }}</pre>{% endif %}
+
+<h2>Provenance</h2>
+{% if prov %}
+<dl>{% for k, v in prov.items() %}<dt>{{ k }}</dt><dd>{{ v }}</dd>{% endfor %}</dl>
+{% else %}
+<p><small class="muted">No provenance — generated before script tracking existed (pre 2026-07-13). Voice and timestamps are the only lineage available.</small></p>
+{% endif %}
+
+<h2>Script (spoken verbatim)</h2>
+{% if blocks %}
+  {% for b in blocks %}
+  <div class="block">
+    <div class="voice">{{ b.voice }}{% if b.chapter %} <span class="chapter">· chapter: {{ b.chapter }}</span>{% endif %}</div>
+    <pre>{{ b.text }}</pre>
+  </div>
+  {% endfor %}
+{% else %}
+<p><small>No script stored — episode predates script tracking.</small></p>
+{% endif %}
+</body>
+</html>
