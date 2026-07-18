@@ -5,19 +5,19 @@ by value-for-effort. Nothing here is a known correctness bug in the shipped
 path; these are hardening, testability, and maintainability items.
 
 ## Testing & CI (highest value)
-- [ ] Add `pytest` + a `tests/` dir. Start with the pure helpers, which need no
-      I/O: `extract.detect_language` / `strip_html` / `mark_dialogue` /
-      `is_paywalled`, `summarize.scrub_light` / `scrub_regex` / `is_cruft_line` /
-      `looks_meta` / `spoken_date`, `ingest._norm_title` / `_substack_fetch_url` /
-      `_attr`, `feedgen._duration` / `_rfc2822`, `voices.assign_voice` (against an
-      in-memory SQLite). These lock down the episode-32-class regressions the code
-      comments keep referencing.
+- [x] `pytest` + `tests/` covering the pure helpers (`extract`, `summarize`,
+      `ingest` helpers, `feedgen`) + a DB-backed `voices.assign_voice` test
+      against a throwaway data dir (`tests/conftest.py`). 40 tests.
+- [~] GitHub Actions workflow authored (`.github/workflows/ci.yml`: `ruff check`
+      + `pytest` + `docker build`; dev tools pinned in `requirements-dev.txt`).
+      NOT yet pushed — the `gh` OAuth token lacks the `workflow` scope. To enable:
+      `gh auth refresh -s workflow` then `git add .github && git commit && git push`.
 - [ ] Integration test for `process_episode` narration-path selection
       (verbatim-short / summary / structured / plain) with a stubbed fetch + TTS.
-- [ ] GitHub Actions workflow: `ruff check`, `ruff format --check`, `pytest`,
-      and `docker build`. `pyproject.toml` (ruff config) is already in place.
 - [ ] Lock transitive dependencies (`uv pip compile` / `pip-compile` →
       `requirements.lock`). Direct deps are pinned in `requirements.txt`.
+- [ ] Optionally add `ruff format` enforcement (currently lint-only; the
+      codebase is hand-formatted and not `ruff format`-clean).
 
 ## Refactors (reduce risk of the fragile pipeline)
 - [ ] Break up `ingest.process_episode` (~320 lines). Extract
