@@ -1,5 +1,5 @@
 """DB-backed: runs against the throwaway data dir set up in conftest.py."""
-from app.voices import CURATED, assign_voice, get_roster
+from app.voices import CURATED, assign_voice, get_roster, reset_roster
 
 
 def test_curated_key_returns_researched_voice_and_persists():
@@ -20,3 +20,12 @@ def test_distinct_uncurated_keys_get_voices():
     a = assign_voice("blog_alpha", "en")
     b = assign_voice("blog_beta", "en")
     assert isinstance(a, str) and isinstance(b, str)
+
+
+def test_reset_roster_clears_all_assignments():
+    # Defined last: reset wipes the shared session roster.
+    assign_voice("temp_blog_reset", "en")
+    assert get_roster()  # non-empty before reset
+    cleared = reset_roster()
+    assert cleared >= 1
+    assert get_roster() == {}

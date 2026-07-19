@@ -78,8 +78,9 @@ path; these are hardening, testability, and maintainability items.
 - [ ] Consider digest-pinning the Docker base image (`python:3.12-slim@sha256:…`)
       for fully reproducible builds.
 - [ ] `pre-commit` config running ruff on commit.
-- [ ] Wire `voices.reset_roster()` to an admin endpoint (currently unreachable) or
-      remove it.
+- [x] `voices.reset_roster()` wired to an admin "↺ reset voices" button
+      (`POST /api/reset-roster`, confirm-guarded); clears auto-assigned roster voices,
+      leaves fixed config voices. Covered by a test.
 - [ ] `summarize.spoken_date` uses the glibc-only `strftime("%-d")`; fine in the
       Linux container, but make it portable before moving the stack to a
       different host (e.g. Synology).

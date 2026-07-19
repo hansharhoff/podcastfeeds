@@ -145,6 +145,17 @@ async def index(request: Request, token: str):
     })
 
 
+@app.post("/{token}/api/reset-roster")
+async def api_reset_roster(token: str):
+    """Clear all persisted voice-roster assignments. Fixed config voices are
+    untouched; CURATED voices re-apply and pool voices are reassigned on next use."""
+    _check(token)
+    from .voices import reset_roster
+    cleared = reset_roster()
+    log.info("voice roster reset: cleared %d assignments", cleared)
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
 @app.post("/{token}/api/eltoggle/{slug}")
 async def api_eltoggle(token: str, slug: str):
     """Enable/disable ElevenLabs for a source (admin toggle)."""

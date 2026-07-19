@@ -66,6 +66,12 @@
   <tr><td>{{ key }}</td><td>{{ v }}</td><td><small class="muted">roster</small></td></tr>
   {% endfor %}
 </table>
+{% if roster %}
+<form method="post" action="/{{ token }}/api/reset-roster"
+      onsubmit="return confirm('Clear all {{ roster|length }} auto-assigned voices? Fixed config voices stay; the rest are reassigned (curated voices re-apply) on the next episode.')">
+  <button title="clear auto-assigned roster voices">↺ reset voices</button>
+</form>
+{% endif %}
 </details>
 
 <details data-key="elevenlabs">
