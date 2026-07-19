@@ -53,6 +53,17 @@ path; these are hardening, testability, and maintainability items.
       Serialize the budget check/spend (reuse `_tts_lock`, or an EL-specific lock)
       to make the local cap exact.
 
+## Reliability / narration quality (from ep. 232 feedback, 2026-07-19)
+- [ ] `tts._synth_chunk` has no retry; edge-tts intermittently returns
+      `NoAudioReceived` under Microsoft-side throttling, which currently aborts the
+      whole episode. Add per-chunk retry with backoff (proven out in the ep-251
+      experiment via a monkeypatch). Low-risk, high-value.
+- [ ] Vision describer returns markdown TABLES that get read aloud verbatim
+      (pipes + `---` and all) — see ep. 232 block 5. Fix the image/text-caption
+      path (`vision_analyze` prompt + a post-scrub) so tabular data is spoken as
+      understandable prose, never raw markdown. Hans is judging 3 candidate styles
+      (ep. 251) before this is baked in.
+
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
       surfaced in the admin UI, so silent failures become visible.
