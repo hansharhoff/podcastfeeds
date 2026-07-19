@@ -63,6 +63,11 @@ path; these are hardening, testability, and maintainability items.
       every spoken block is protected and text-screenshot tables are labelled
       "There is a table here."; (2) `VISION_PROMPT` now forbids markdown/pipes and
       routes data tables to kind "image" with a prose takeaway. Covered by tests.
+- [x] Unlabelled reader mailbags (ep. 232) read Q & A in one voice, so you couldn't
+      tell them apart. `extract.mark_qa` now detects unlabelled Q->A posts (density
+      gated to avoid false positives on essays) and tags question paragraphs; they're
+      read in a distinct roster voice with an "A reader asks:" cue and their own
+      chapter, answers stay in the main voice. Style chosen by Hans. Covered by tests.
 
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,

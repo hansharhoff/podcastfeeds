@@ -25,6 +25,7 @@ from .extract import (
     image_area,
     is_paywalled,
     mark_dialogue,
+    mark_qa,
     segments_from_clean_html,
     strip_html,
 )
@@ -461,6 +462,9 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
         if seg["type"] == "text":
             parts.append(f"<p>{_html_escape(seg['text'])}</p>")
             used += len(seg["text"])
+        elif seg["type"] == "question":
+            parts.append(f"<p><strong>Q: {_html_escape(seg['text'])}</strong></p>")
+            used += len(seg["text"])
         elif seg["type"] == "dialogue":
             parts.append(
                 f"<p><strong>{_html_escape(seg['speaker'])}:</strong> "
@@ -549,7 +553,7 @@ def _conversation_blocks(analysis: dict, main_voice: str, language: str,
 def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
                   quote_voice: str, describer_voice: str, language: str, max_chars: int,
                   images_meta: dict[str, dict], speaker_voice,
-                  source_label: str = "") -> tuple[list[dict], list[dict]]:
+                  source_label: str = "", question_voice: str = "") -> tuple[list[dict], list[dict]]:
     """Turn ordered segments into TTS blocks (voice switches for quotes and
     screenshot conversations, chapter marks at images). Returns (blocks, images_used)."""
     blocks: list[dict] = [{
@@ -591,6 +595,19 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
             blocks.append({
                 "voice": main_voice, "text": head,
                 "chapter": {"title": head[:80], "image": None},
+            })
+            used += len(seg["text"])
+        elif seg["type"] == "question":
+            # A reader-mailbag question: distinct voice + spoken cue so it's clearly
+            # a question, not part of the author's answer. The answer follows as
+            # normal text in the main voice.
+            flush()
+            q = scrub_light(seg["text"])
+            cue = "En læser spørger: " if language == "da" else "A reader asks: "
+            blocks.append({
+                "voice": question_voice or quote_voice,
+                "text": f"{cue}{q}",
+                "chapter": {"title": q[:70], "image": None},
             })
             used += len(seg["text"])
         elif seg["type"] == "quote":
@@ -783,6 +800,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         # Interview transcripts (speaker labels at paragraph start) become
         # per-speaker dialogue segments so each voice is read differently.
         segments = mark_dialogue(segments)
+        # Unlabelled reader mailbags: tag question paragraphs so they're read in a
+        # distinct voice with a spoken cue, making Q vs A clear (ep. 232 feedback).
+        segments = mark_qa(segments)
         seg_chars = sum(len(s_.get("text", "")) for s_ in segments)
         images: list[dict] = []
         source_label = _source_label(source, link)
@@ -860,10 +880,15 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 SourceDef(**{**source.__dict__, "voice": ""}),
                 language, f"{roster_key}#images",
             )
+            # Distinct voice for reader-mailbag questions (only used if mark_qa fired).
+            question_voice = pick_voice(
+                SourceDef(**{**source.__dict__, "voice": ""}),
+                language, f"{roster_key}#questions",
+            )
             blocks, images = _build_blocks(
                 title, intro, segments, voice, quote_voice, describer_voice,
                 language, source.max_chars, images_meta, speaker_voice,
-                source_label=source_label,
+                source_label=source_label, question_voice=question_voice,
             )
             if source.danish_perspective:
                 try:
@@ -901,6 +926,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 ),
                 "generator": "extract+vision", "scrub": "light",
             })
+            qa_n = sum(1 for s_ in segments if s_.get("type") == "question")
+            if qa_n:
+                prov["qa_questions"] = qa_n
+                prov["voices"]["question"] = question_voice
 
             # Episode artwork: the page's lead image (og/cover, fetched above),
             # else the MOST PROMINENT body image — the largest by pixel area,

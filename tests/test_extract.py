@@ -1,4 +1,10 @@
-from app.extract import detect_language, is_paywalled, mark_dialogue, strip_html
+from app.extract import (
+    detect_language,
+    is_paywalled,
+    mark_dialogue,
+    mark_qa,
+    strip_html,
+)
 
 
 def test_strip_html_removes_tags_and_unescapes():
@@ -61,6 +67,42 @@ def test_mark_dialogue_leaves_non_interview_untouched():
     # Only one speaker appears twice -> not an interview; returned unchanged.
     segs = [_text("She asks: what now?"), _text("A plain paragraph."), _text("Another one.")]
     assert mark_dialogue(segs) is segs
+
+
+def test_mark_qa_tags_mailbag_questions():
+    segs = [
+        _text("Why are Coloradans overrepresented in the comments?"),
+        _text("I don't know, but several of the team are from Colorado."),
+        _text("Is the AI backlash uniquely anti-tech?"),
+        _text("A little of both, honestly."),
+        _text("What should Democrats actually do about it?"),
+        _text("Focus on abundance and permitting reform."),
+    ]
+    out = mark_qa(segs)
+    assert [s["type"] for s in out] == [
+        "question", "text", "question", "text", "question", "text"
+    ]
+    assert out[0]["text"].endswith("?")
+
+
+def test_mark_qa_leaves_normal_article_untouched():
+    segs = [
+        _text("A paragraph of ordinary prose."),
+        _text("Is this one rhetorical question enough?"),
+        _text("It elaborates on the point at length."),
+        _text("More prose here."),
+        _text("Even more prose."),
+        _text("A concluding thought."),
+    ]
+    assert mark_qa(segs) is segs  # only one question -> unchanged
+
+
+def test_mark_qa_ignores_overlong_questions():
+    long_q = "This rambles on and on " * 40 + "?"
+    segs = [_text(long_q), _text("answer"),
+            _text(long_q), _text("answer"),
+            _text(long_q), _text("answer")]
+    assert mark_qa(segs) is segs  # questions too long to be reader questions
 
 
 def test_mark_dialogue_continuation_inherits_speaker():

@@ -315,6 +315,39 @@ def mark_dialogue(segments: list[dict]) -> list[dict]:
     return out
 
 
+_QA_MAX_QUESTION = 400  # a reader question is usually concise; longer = probably prose
+
+
+def _is_question(text: str) -> bool:
+    t = text.strip()
+    return t.endswith("?") and 0 < len(t) <= _QA_MAX_QUESTION
+
+
+def mark_qa(segments: list[dict]) -> list[dict]:
+    """Detect an unlabelled reader mailbag / Q&A post (question paragraphs each
+    followed by an answer paragraph, with no 'Q:'/'A:' labels) and tag the question
+    segments as {"type":"question"} so they can be read in a distinct voice with a
+    spoken cue. Requires several Q->A pairs AND a meaningful density of them, so a
+    normal essay with a few rhetorical questions is left untouched. Pure, no I/O.
+    """
+    text_count = sum(1 for s in segments if s.get("type") == "text")
+    if text_count < 6:
+        return segments
+    q_positions: set[int] = set()
+    for i, seg in enumerate(segments):
+        if seg.get("type") != "text" or not _is_question(seg["text"]):
+            continue
+        nxt = segments[i + 1] if i + 1 < len(segments) else None
+        if nxt and nxt.get("type") == "text" and not _is_question(nxt["text"]):
+            q_positions.add(i)
+    if len(q_positions) < 3 or len(q_positions) < 0.15 * text_count:
+        return segments  # not a mailbag — too few / too sparse questions
+    return [
+        {"type": "question", "text": seg["text"]} if i in q_positions else seg
+        for i, seg in enumerate(segments)
+    ]
+
+
 def extract_og_image(html_text: str, url: str = "") -> str:
     """The page's lead/social image, if any (used as episode artwork)."""
     meta = trafilatura.extract_metadata(html_text, default_url=url or None)
