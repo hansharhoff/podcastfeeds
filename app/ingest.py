@@ -32,6 +32,7 @@ from .substack import fetch_post, substack_ref
 from .summarize import (
     article_summary,
     digest_script,
+    has_markdown_table,
     is_cruft_line,
     scrub_light,
     spoken_date,
@@ -615,10 +616,16 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
                 used += sum(len(b["text"]) for b in convo)
             elif analysis.get("kind") == "text" and analysis.get("text"):
                 # A text screenshot: read its actual words, not just a description.
-                shot_text = analysis["text"].strip()[:2000]
-                marker = ("Her er et skærmbillede med tekst. " if language == "da"
-                          else "There is a text screenshot here. ")
-                seg["description"] = shot_text  # show notes carry the text too
+                # scrub_light linearizes any markdown/pipe table into spoken prose so
+                # the TTS voice never reads "|" and "---" aloud (ep. 232 feedback).
+                raw_shot = analysis["text"].strip()
+                is_table = has_markdown_table(raw_shot)
+                shot_text = scrub_light(raw_shot)[:2000]
+                if language == "da":
+                    marker = "Her er en tabel. " if is_table else "Her er et skærmbillede med tekst. "
+                else:
+                    marker = "There is a table here. " if is_table else "There is a text screenshot here. "
+                seg["description"] = shot_text  # show notes carry the (cleaned) text too
                 blocks.append({
                     "voice": describer_voice,
                     "text": f"{marker}{shot_text}",

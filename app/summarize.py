@@ -117,9 +117,57 @@ def _spoken_domain(match: re.Match) -> str:
 
 _FOOTNOTE_RE = re.compile(r"\[\d{1,3}\]")  # inline footnote markers: [1], [12]
 
+# A markdown table separator row, e.g. "---|---|---" or "| :--- | ---: |".
+_TABLE_SEP_RE = re.compile(r"^[\s|:.-]*-{2,}[\s|:.-]*$")
+
+
+def _is_table_row(line: str) -> bool:
+    return line.count("|") >= 2
+
+
+def has_markdown_table(text: str) -> bool:
+    """True if the text contains a pipe/markdown table (header + separator row)."""
+    lines = text.splitlines()
+    return any(
+        _is_table_row(lines[i]) and i + 1 < len(lines)
+        and "|" in lines[i + 1] and _TABLE_SEP_RE.match(lines[i + 1])
+        for i in range(len(lines))
+    )
+
+
+def linearize_markdown_tables(text: str) -> str:
+    """Rewrite markdown/pipe tables as spoken prose so TTS never reads pipes and
+    dashes aloud. Each data row becomes 'Header: value; Header: value.' using the
+    table's own header cells. Non-table text is returned unchanged."""
+    lines = text.splitlines()
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        if (_is_table_row(lines[i]) and i + 1 < n
+                and "|" in lines[i + 1] and _TABLE_SEP_RE.match(lines[i + 1])):
+            headers = [c.strip() for c in lines[i].split("|")]
+            i += 2  # consume header + separator row
+            sentences: list[str] = []
+            while i < n and _is_table_row(lines[i]):
+                cells = [c.strip() for c in lines[i].split("|")]
+                parts = [
+                    (f"{h}: {c}" if h and h != c else c)
+                    for h, c in zip(headers, cells, strict=False)  # rows may be ragged
+                    if c
+                ]
+                if parts:
+                    sentences.append("; ".join(parts) + ".")
+                i += 1
+            out.append(" ".join(sentences))
+        else:
+            out.append(lines[i])
+            i += 1
+    return "\n".join(out)
+
 
 def scrub_light(text: str) -> str:
     """URL/markdown cleanup safe for article prose (no framing heuristics)."""
+    text = linearize_markdown_tables(text)           # pipe tables -> spoken prose
     text = _MD_LINK_RE.sub(r"\1", text)              # [text](url) -> text
     text = _URL_RE.sub(_spoken_domain, text)         # bare URLs -> domain or gone
     text = re.sub(r"[*_`#]+", "", text)              # markdown emphasis/headers
@@ -252,12 +300,15 @@ VISION_PROMPT = """Analyze this image from an article. Reply with ONLY a JSON ob
 }}
 - kind "conversation": a back-and-forth of social-media posts, a thread, or a chat
   (multiple tweets/X posts, text messages, forum replies) — fill "messages" in order.
-- kind "text": the image is essentially a block of readable text (a screenshot of
+- kind "text": the image is essentially a block of readable PROSE (a screenshot of
   an article excerpt, a note, a single post/tweet, a quoted passage) — put the full
   verbatim text in "text". This is for when the point of the screenshot IS its words.
-- kind "image": a photo, chart, diagram or figure with no substantial readable text
-  — omit "messages"/"text". For charts/graphs the description must state the main
-  takeaway, not just the axes."""
+- kind "image": a photo, chart, diagram, figure, OR A TABLE of data — omit
+  "messages"/"text". For charts/graphs/tables the description must state the main
+  takeaway and the key figures in plain spoken prose, not just the axes.
+NEVER use a markdown table, pipes (|), or column layout in any field — this is read
+aloud, so write every number and comparison as a spoken sentence. A screenshot of a
+data table is kind "image" (prose takeaway in "description"), NOT kind "text"."""
 
 
 async def _vision_via_cli(prompt: str, image: bytes) -> str:

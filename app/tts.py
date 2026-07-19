@@ -49,7 +49,7 @@ def _split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
 EDGE_FALLBACK_VOICE = "en-US-AndrewNeural"
 
 
-async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 3) -> None:
+async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 6) -> None:
     # ElevenLabs voices are encoded as "eleven:<voice_id>". Budget was already
     # checked at episode level; if a call fails here, fall back to edge-tts so
     # the episode still completes.
@@ -68,10 +68,14 @@ async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 3)
             if out_path.stat().st_size > 0:
                 return
             raise RuntimeError("edge-tts produced empty file")
-        except Exception:
+        except Exception as exc:
             if attempt == attempts:
                 raise
-            await asyncio.sleep(3 * attempt)
+            # edge-tts returns NoAudioReceived under Microsoft-side throttling;
+            # back off and retry (sustained throttling needs several attempts).
+            log.warning("edge-tts chunk failed (attempt %d/%d): %s; backing off",
+                        attempt, attempts, exc)
+            await asyncio.sleep(min(3 * attempt, 20))
 
 
 async def _concat_mp3s(parts: list[Path], out_path: Path) -> None:

@@ -54,15 +54,15 @@ path; these are hardening, testability, and maintainability items.
       to make the local cap exact.
 
 ## Reliability / narration quality (from ep. 232 feedback, 2026-07-19)
-- [ ] `tts._synth_chunk` has no retry; edge-tts intermittently returns
-      `NoAudioReceived` under Microsoft-side throttling, which currently aborts the
-      whole episode. Add per-chunk retry with backoff (proven out in the ep-251
-      experiment via a monkeypatch). Low-risk, high-value.
-- [ ] Vision describer returns markdown TABLES that get read aloud verbatim
-      (pipes + `---` and all) — see ep. 232 block 5. Fix the image/text-caption
-      path (`vision_analyze` prompt + a post-scrub) so tabular data is spoken as
-      understandable prose, never raw markdown. Hans is judging 3 candidate styles
-      (ep. 251) before this is baked in.
+- [x] edge-tts throttling (`NoAudioReceived`): `tts._synth_chunk` already retried
+      3× (~9s) but sustained throttling needs more — deepened to 6 attempts with
+      backoff (max 20s) and a warning log so throttling is visible.
+- [x] Vision describer emitted markdown TABLES read aloud verbatim (ep. 232 block
+      5). Fixed two ways: (1) `summarize.linearize_markdown_tables` rewrites any
+      pipe table into spoken "Header: value; …" prose, wired into `scrub_light` so
+      every spoken block is protected and text-screenshot tables are labelled
+      "There is a table here."; (2) `VISION_PROMPT` now forbids markdown/pipes and
+      routes data tables to kind "image" with a prose takeaway. Covered by tests.
 
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
