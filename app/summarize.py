@@ -304,8 +304,10 @@ VISION_PROMPT = """Analyze this image from an article. Reply with ONLY a JSON ob
   an article excerpt, a note, a single post/tweet, a quoted passage) — put the full
   verbatim text in "text". This is for when the point of the screenshot IS its words.
 - kind "image": a photo, chart, diagram, figure, OR A TABLE of data — omit
-  "messages"/"text". For charts/graphs/tables the description must state the main
-  takeaway and the key figures in plain spoken prose, not just the axes.
+  "messages"/"text". For charts/graphs/tables, EXPLAIN the result the way you'd tell
+  a friend: lead with the takeaway, then give the key figures ROUNDED (e.g. "about
+  two-thirds", "roughly one in five") and the main comparison or ratio — do NOT
+  recite every cell, category, or exact decimal. Two or three sentences is fine here.
 NEVER use a markdown table, pipes (|), or column layout in any field — this is read
 aloud, so write every number and comparison as a spoken sentence. A screenshot of a
 data table is kind "image" (prose takeaway in "description"), NOT kind "text"."""
