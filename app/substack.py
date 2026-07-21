@@ -12,6 +12,7 @@ page) is robust in three ways the HTML path is not:
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -20,6 +21,15 @@ from .config import SourceDef
 from .extract import UA, _cookie_for, is_paywalled
 
 log = logging.getLogger("podcastfeeds")
+
+# A paid post whose delivered body falls below this share of the API's
+# `wordcount` (full-post length) is a truncated logged-out preview. Full
+# bodies land near 1.0; observed previews land at 0.05–0.35.
+_TRUNCATION_RATIO = 0.7
+
+
+def _delivered_words(body_html: str) -> int:
+    return len(re.sub(r"<[^>]+>", " ", body_html).split())
 
 
 def substack_ref(source: SourceDef, link: str) -> tuple[str, str] | None:
@@ -51,13 +61,25 @@ async def fetch_post(sub: str, slug: str) -> dict | None:
     except Exception as exc:
         log.warning("substack API failed for %s/%s: %s", sub, slug, exc)
         return None
+    return post_from_api(data)
+
+
+def post_from_api(data: dict) -> dict:
+    """Build the fetch_post result from the API JSON (pure, testable).
+
+    Accessible = free post, or a paid post whose full body came back (i.e. the
+    cookie is a live subscriber session). Truncation is judged against the
+    API's `wordcount` (full-post length): an expired/logged-out session gets
+    HTTP 200 with a truncated body_html that carries NO paywall CTA, so the
+    is_paywalled text check alone misses it (ep. 243, silent since 2026-07-17).
+    """
     body_html = data.get("body_html") or ""
     audience = data.get("audience") or "everyone"
-    # Accessible = free post, or a paid post whose full body came back (i.e. the
-    # cookie is a subscriber). A non-subscriber gets a short truncated preview
-    # that still carries a paywall CTA.
+    wordcount = int(data.get("wordcount") or 0)
+    delivered = _delivered_words(body_html)
+    truncated = wordcount > 0 and delivered < _TRUNCATION_RATIO * wordcount
     accessible = audience == "everyone" or (
-        bool(body_html) and not is_paywalled("", body_html)
+        bool(body_html) and not truncated and not is_paywalled("", body_html)
     )
     return {
         "title": data.get("title") or "",
@@ -65,4 +87,6 @@ async def fetch_post(sub: str, slug: str) -> dict | None:
         "cover_image": data.get("cover_image") or "",
         "audience": audience,
         "accessible": accessible,
+        "wordcount": wordcount,
+        "delivered_words": delivered,
     }

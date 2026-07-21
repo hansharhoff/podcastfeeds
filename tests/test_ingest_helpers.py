@@ -58,3 +58,39 @@ def test_attr_escapes_html_dangerous_chars():
     out = _attr('http://x/?a=1&b=2"><script>')
     assert "&amp;" in out and "&quot;" in out and "&lt;" in out and "&gt;" in out
     assert '"' not in out and "<" not in out
+
+# ── preview messaging: subscribed-but-truncated must say "fetch problem",
+#    not "requires a paid subscription" (ep. 243 feedback) ────────────────
+
+def test_episode_intro_preview_plain():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Src", "en", preview=True)
+    assert "free preview of a paid post" in text
+
+
+def test_episode_intro_preview_fetch_issue_en():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Src", "en", preview=True, fetch_issue=True)
+    assert "problem getting the full version" in text
+    assert "free preview of a paid post" not in text
+
+
+def test_episode_intro_preview_fetch_issue_da():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Src", "da", preview=True, fetch_issue=True)
+    assert "problem med at hente den fulde version" in text
+
+
+def test_preview_outro_fetch_issue_en():
+    from app.ingest import _preview_outro
+    plain = _preview_outro("en")
+    issue = _preview_outro("en", fetch_issue=True)
+    assert "requires a paid subscription" in plain
+    assert "could not be fetched" in issue
+    assert "requires a paid subscription" not in issue
+
+
+def test_preview_outro_fetch_issue_da():
+    from app.ingest import _preview_outro
+    issue = _preview_outro("da", fetch_issue=True)
+    assert "kunne ikke hentes" in issue

@@ -69,6 +69,28 @@ path; these are hardening, testability, and maintainability items.
       read in a distinct roster voice with an "A reader asks:" cue and their own
       chapter, answers stay in the main voice. Style chosen by Hans. Covered by tests.
 
+## Reliability (from ep. 243 feedback, 2026-07-21)
+- [x] Paid Substack posts silently published as previews since ~2026-07-17: the
+      substack.com session cookie stopped granting access, and API previews
+      carry no paywall CTA so `is_paywalled` missed them (`accessible` wrongly
+      True). Fixed: `substack.post_from_api` now compares delivered words
+      against the API's full-post `wordcount` (<70% ⇒ truncated). Covered by
+      tests. Affected ready episodes: 75, 241, 243, 248, 262, 267 — republish
+      only on explicit approval.
+- [x] When a subscriber cookie IS configured and a paid post still comes back
+      truncated, the episode now says "there was a problem getting the full
+      version" (intro + outro + show-notes banner + `fetch_issue` provenance,
+      skip-error variant too) instead of the misleading "requires a paid
+      subscription" wording.
+- [x] noahpinion source pointed at the custom-domain feed
+      (www.noahpinion.blog/feed), which bypasses the authenticated Substack
+      API path entirely. Switched to noahpinion.substack.com/feed in local
+      sources.yaml (feed GUIDs identical, no re-generation).
+- [ ] Refresh the substack.com session cookie in config/secrets.yaml (Hans —
+      grab a fresh `substack.sid` from a logged-in browser session). Consider a
+      periodic cookie-health probe (fetch one known-paid post, alert on
+      truncation) so the next expiry is caught within hours, not days.
+
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
       surfaced in the admin UI, so silent failures become visible.

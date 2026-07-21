@@ -16,6 +16,7 @@ from . import db
 from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_voice
 from .db import Episode, utcnow
 from .extract import (
+    _cookie_for,
     detect_language,
     extract_article,
     extract_og_image,
@@ -485,20 +486,36 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
 
 
 def _episode_intro(title: str, source_name: str, language: str,
-                   preview: bool = False) -> str:
+                   preview: bool = False, fetch_issue: bool = False) -> str:
+    # fetch_issue: a subscriber cookie was configured but the full body still
+    # didn't come back (expired session, etc.) — say "problem", not "paywall",
+    # so Hans hears that something needs fixing (ep. 243 feedback).
     date_str = spoken_date(utcnow(), language)
     if language == "da":
         base = f"{title}. Fra {source_name}, {date_str}."
-        if preview:
+        if preview and fetch_issue:
+            base += (" Bemærk: der var et problem med at hente den fulde version"
+                     " af dette betalte indlæg — dette er kun det gratis uddrag.")
+        elif preview:
             base += " Bemærk: dette er kun et gratis uddrag af et betalt indlæg."
         return base
     base = f"{title}. From {source_name}, {date_str}."
-    if preview:
+    if preview and fetch_issue:
+        base += (" Note: there was a problem getting the full version of this"
+                 " paid post — this is only the free excerpt.")
+    elif preview:
         base += " Note: this is only the free preview of a paid post."
     return base
 
 
-def _preview_outro(language: str) -> str:
+def _preview_outro(language: str, fetch_issue: bool = False) -> str:
+    if fetch_issue:
+        return ("Det var uddraget. Den fulde version kunne ikke hentes denne gang — "
+                "abonnement-sessionen skal muligvis fornys. Linket findes i shownotes."
+                if language == "da"
+                else "That was the free excerpt. The full version could not be fetched "
+                     "this time — the subscription session may need renewing. The link "
+                     "is in the show notes.")
     return ("Det var uddraget. Resten af dette indlæg kræver et betalt abonnement; "
             "linket findes i shownotes." if language == "da"
             else "That was the free preview. The rest of this post requires a paid "
@@ -690,6 +707,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         body, segments, og_image = "", [], ""
         html_text = ""
         paywalled = False
+        fetch_issue = False
         sref = substack_ref(source, link) if link else None
         if sref:
             # Substack: use the post API (cookie-safe, definitive audience).
@@ -704,6 +722,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 title = post["title"] or title
             elif post and not post["accessible"]:
                 paywalled = True
+                # A cookie is configured for substack.com, so a truncated paid
+                # post means the session no longer grants access (expired /
+                # logged out) — a fetch problem to surface, not a plain paywall.
+                fetch_issue = bool(_cookie_for(f"https://{sref[0]}.substack.com/"))
                 # Keep the preview content (Substack returns the free excerpt as
                 # body_html) so a substantial preview can still become an episode.
                 if post["body_html"]:
@@ -712,8 +734,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     _, body = extract_article(html_text, link)
                     og_image = post["cover_image"]
                     title = post["title"] or title
-                log.warning("PAYWALL (substack %s, audience=%s) for %s",
-                            sref[0], post["audience"], link)
+                log.warning(
+                    "PAYWALL (substack %s, audience=%s, delivered %d/%d words%s) for %s",
+                    sref[0], post["audience"], post["delivered_words"],
+                    post["wordcount"],
+                    " DESPITE subscriber cookie — session may be expired"
+                    if fetch_issue else "", link)
             # post is None -> fall through to the generic HTML fetch below
         if not sref or (not html_text and not paywalled):
             if link:
@@ -739,10 +765,14 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 with db.session() as s:
                     ep = s.get(Episode, ep_id)
                     ep.status = "skipped"
-                    ep.error = "paywalled — preview too short to narrate"
+                    ep.error = ("paywalled DESPITE subscriber cookie (session "
+                                "expired?) — preview too short to narrate"
+                                if fetch_issue
+                                else "paywalled — preview too short to narrate")
                     ep.provenance = json.dumps({
                         "pipeline_version": PIPELINE_VERSION, "skipped": "paywall",
                         "link": link, "body_chars": len(body),
+                        "fetch_issue": fetch_issue,
                     })
                     s.add(ep)
                     s.commit()
@@ -806,10 +836,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         seg_chars = sum(len(s_.get("text", "")) for s_ in segments)
         images: list[dict] = []
         source_label = _source_label(source, link)
-        intro = _episode_intro(title, source.name, language, preview=is_preview)
+        intro = _episode_intro(title, source.name, language, preview=is_preview,
+                               fetch_issue=fetch_issue)
         # Outro: previews get an explicit "that was the free preview" sign-off.
         def outro(has_images: bool) -> str:
-            return _preview_outro(language) if is_preview else _episode_outro(language, has_images)
+            return (_preview_outro(language, fetch_issue=fetch_issue)
+                    if is_preview else _episode_outro(language, has_images))
         cover = _source_cover(source)
         episode_image = og_image
         if episode_image:
@@ -966,8 +998,14 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
 
         if is_preview:
             prov["preview"] = True
-            banner = ("<p><strong>⚠ Preview only — this is the free excerpt of a "
-                      "paid post; the full article requires a subscription.</strong></p>")
+            if fetch_issue:
+                prov["fetch_issue"] = True
+                banner = ("<p><strong>⚠ Fetch problem — a subscriber cookie is "
+                          "configured but only the free excerpt came back; the "
+                          "substack.com session may have expired.</strong></p>")
+            else:
+                banner = ("<p><strong>⚠ Preview only — this is the free excerpt of a "
+                          "paid post; the full article requires a subscription.</strong></p>")
             show_notes = banner + show_notes
         with db.session() as s:
             ep = s.get(Episode, ep_id)
