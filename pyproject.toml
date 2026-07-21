@@ -23,3 +23,6 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Bare `pytest` (CI) doesn't put the repo root on sys.path the way
+# `python -m pytest` does; the app package lives at the root.
+pythonpath = ["."]
