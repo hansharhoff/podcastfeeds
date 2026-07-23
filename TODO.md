@@ -86,10 +86,20 @@ path; these are hardening, testability, and maintainability items.
       (www.noahpinion.blog/feed), which bypasses the authenticated Substack
       API path entirely. Switched to noahpinion.substack.com/feed in local
       sources.yaml (feed GUIDs identical, no re-generation).
-- [ ] Refresh the substack.com session cookie in config/secrets.yaml (Hans —
-      grab a fresh `substack.sid` from a logged-in browser session). Consider a
-      periodic cookie-health probe (fetch one known-paid post, alert on
-      truncation) so the next expiry is caught within hours, not days.
+- [x] Refresh the substack.com session cookie in config/secrets.yaml — done
+      2026-07-23. Post-mortem correction to the entry above: only pobrien (and
+      the pre-Jul-21 noahpinion custom-domain bypass) were cookie/fetch
+      victims. Slow Boring / Silver Bulletin are free signups — eps 75, 241,
+      248, 267 were legitimate previews, not fetch failures. Entitlement is
+      now explicit (`paid: true` per source); the probe
+      (scripts/check_substack_access.py) sentinels only verified-active subs.
+- [ ] noahpinion paid access: the paid sub is NOT on the substack.com account
+      behind the cookie ({sub}.substack.com/api/v1/subscription → 404 there,
+      while the profile list misleadingly says "subscribed"). Hans: find which
+      email the sub is under (To: line of the newsletter) and either move it
+      to the main account or supply a www.noahpinion.blog domain cookie (then
+      extend fetch_post to use the custom-domain API for that source). Until
+      then noahpinion paid posts defer as pending.
 
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
