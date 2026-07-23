@@ -94,3 +94,22 @@ def test_preview_outro_fetch_issue_da():
     from app.ingest import _preview_outro
     issue = _preview_outro("da", fetch_issue=True)
     assert "kunne ikke hentes" in issue
+
+
+# ── paywall action: paid posts DEFER (stay pending) while the subscriber
+#    session is broken, instead of publishing previews (Hans, 2026-07-23) ──
+
+def test_paywall_action_defers_on_fetch_issue_regardless_of_length():
+    from app.ingest import _paywall_action
+    assert _paywall_action(fetch_issue=True, body_chars=10_000) == "defer"
+    assert _paywall_action(fetch_issue=True, body_chars=100) == "defer"
+
+
+def test_paywall_action_substantial_preview_without_fetch_issue():
+    from app.ingest import _paywall_action
+    assert _paywall_action(fetch_issue=False, body_chars=600) == "preview"
+
+
+def test_paywall_action_thin_preview_without_fetch_issue_skips():
+    from app.ingest import _paywall_action
+    assert _paywall_action(fetch_issue=False, body_chars=599) == "skip"

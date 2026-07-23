@@ -677,6 +677,15 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
     return blocks, images
 
 
+def _paywall_action(fetch_issue: bool, body_chars: int) -> str:
+    """What to do with a paywalled post: 'defer' (requeue as pending) when a
+    subscriber cookie exists but access failed — no previews from sources Hans
+    pays for; otherwise 'preview' a substantial free excerpt or 'skip' a stub."""
+    if fetch_issue:
+        return "defer"
+    return "preview" if body_chars >= 600 else "skip"
+
+
 async def process_episode(ep_id: int, source: SourceDef) -> None:
     with db.session() as s:
         ep = s.get(Episode, ep_id)
@@ -757,26 +766,36 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
 
         # Paywalled: a substantial free preview still becomes an episode, clearly
         # bracketed as a preview (start + end). Only a thin stub is skipped.
+        # Fetch-issue (subscriber cookie present but access denied): DEFER — back
+        # to pending so every poll retries it and the episode is generated in
+        # full once the session cookie is refreshed. No preview is published.
         is_preview = False
-        if paywalled:
-            if len(body) >= 600:
-                is_preview = True
-            else:
-                with db.session() as s:
-                    ep = s.get(Episode, ep_id)
-                    ep.status = "skipped"
-                    ep.error = ("paywalled DESPITE subscriber cookie (session "
-                                "expired?) — preview too short to narrate"
-                                if fetch_issue
-                                else "paywalled — preview too short to narrate")
-                    ep.provenance = json.dumps({
-                        "pipeline_version": PIPELINE_VERSION, "skipped": "paywall",
-                        "link": link, "body_chars": len(body),
-                        "fetch_issue": fetch_issue,
-                    })
-                    s.add(ep)
-                    s.commit()
-                return
+        action = _paywall_action(fetch_issue, len(body)) if paywalled else "full"
+        if action == "defer":
+            log.warning("DEFER %s — paid post, subscriber session broken; "
+                        "will retry on next poll", link)
+            with db.session() as s:
+                ep = s.get(Episode, ep_id)
+                ep.status = "pending"
+                ep.error = ("paid post deferred — subscriber session expired; "
+                            "retries every poll until the cookie is refreshed")
+                s.add(ep)
+                s.commit()
+            return
+        if action == "preview":
+            is_preview = True
+        elif action == "skip":
+            with db.session() as s:
+                ep = s.get(Episode, ep_id)
+                ep.status = "skipped"
+                ep.error = "paywalled — preview too short to narrate"
+                ep.provenance = json.dumps({
+                    "pipeline_version": PIPELINE_VERSION, "skipped": "paywall",
+                    "link": link, "body_chars": len(body),
+                })
+                s.add(ep)
+                s.commit()
+            return
         if len(body) < 200:
             # Page unfetchable/paywalled: best remaining source is the feed
             # entry itself. NEVER the description — a previous bad run may have
