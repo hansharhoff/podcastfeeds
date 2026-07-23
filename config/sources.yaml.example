@@ -91,7 +91,12 @@ sources:
     danish_perspective: true
     description: "Articles shared from your phone"
 
-  # Paid Substack posts: add the publication's *.substack.com/feed URL here and
+  # Paid Substack posts: set `paid: true` on sources you have a PAID subscription
+  # to (verify with {sub}.substack.com/api/v1/subscription — the profile list's
+  # membership_state can claim "subscribed" for subs that live on another account).
+  # Paid sources with truncated fetches are deferred and surfaced; free-signup
+  # sources publish paid posts as bracketed previews.
+  # Add the publication's *.substack.com/feed URL here and
   # put a session cookie in config/secrets.yaml (see secrets.yaml.example). Use
   # the *.substack.com host, not a custom domain — the cookie is scoped to
   # substack.com, so custom domains would not receive it and paid posts fail.

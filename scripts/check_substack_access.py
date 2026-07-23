@@ -16,11 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.substack import fetch_post  # noqa: E402
 
-# Known paid posts (audience=only_paid). Old posts stay paid, so these remain
-# valid probes; swap them if a publication ever unpaywalls its archive.
+# Known paid posts (audience=only_paid) on publications the configured account
+# has an ACTIVE paid subscription to — verify entitlement with
+# {sub}.substack.com/api/v1/subscription (200 + status active), NOT the profile
+# list's membership_state, before adding a probe here. Probing a pub without an
+# active sub reports a false COOKIE-EXPIRED (2026-07-23 lesson: matthewyglesias
+# was free_signup all along, noahpinion's paid sub lives on another account).
 PROBES = [
-    ("matthewyglesias", "democratic-fields-are-shifting-gop"),
-    ("noahpinion", "americas-political-economy-is-pretty"),
+    ("phillipspobrien", "bravery-does-not-win-wars"),
 ]
 
 

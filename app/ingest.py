@@ -16,7 +16,6 @@ from . import db
 from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_voice
 from .db import Episode, utcnow
 from .extract import (
-    _cookie_for,
     detect_language,
     extract_article,
     extract_og_image,
@@ -731,10 +730,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 title = post["title"] or title
             elif post and not post["accessible"]:
                 paywalled = True
-                # A cookie is configured for substack.com, so a truncated paid
-                # post means the session no longer grants access (expired /
-                # logged out) — a fetch problem to surface, not a plain paywall.
-                fetch_issue = bool(_cookie_for(f"https://{sref[0]}.substack.com/"))
+                # Only sources Hans actually pays for (paid: true in sources.yaml)
+                # get the defer/surface treatment. A configured cookie alone is
+                # NOT entitlement: the substack.com cookie exists for every
+                # publication, including ones with only a free signup, and their
+                # paid posts are legitimately preview-only (2026-07-23 lesson).
+                fetch_issue = source.paid
                 # Keep the preview content (Substack returns the free excerpt as
                 # body_html) so a substantial preview can still become an episode.
                 if post["body_html"]:

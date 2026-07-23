@@ -64,6 +64,8 @@ class SourceDef:
     danish_perspective: bool = False  # append an Opus-written "view from Denmark" segment
     keep_available: int = 10  # record the latest N posts as skipped rows (browsable/unskippable)
     el_voice: str = ""  # ElevenLabs voice_id for this source's main voice (when EL enabled)
+    paid: bool = False  # the user has a paid sub here: truncated paid posts are a
+    #                     fetch problem to defer/surface, never a legitimate preview
 
     def feed_urls(self) -> list[str]:
         return self.urls or ([self.url] if self.url else [])
