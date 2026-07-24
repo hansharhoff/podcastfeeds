@@ -6,6 +6,8 @@ that carries no paywall CTA, so `is_paywalled` alone misses it. The API's
 words actually delivered is the reliable signal (observed 2026-07-21:
 slowboring delivered ~60 words vs wordcount 1301; noahpinion ~1300 vs 3878).
 """
+import asyncio
+
 from app.substack import _delivered_words, post_from_api
 
 
@@ -57,3 +59,43 @@ def test_post_from_api_carries_wordcount_for_provenance():
                           "audience": "only_paid", "wordcount": 1301})
     assert post["wordcount"] == 1301
     assert post["delivered_words"] == 60
+
+
+# ── by-id fallback: some subscription types (reader-app billing) are honored
+#    by the substack.com host but NOT the publication subdomain (noahpinion,
+#    2026-07-24). When the subdomain returns a truncated paid body, fetch_post
+#    must retry substack.com/api/v1/posts/by-id/{id} and use a full result. ──
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_fetch_post_falls_back_to_by_id_for_truncated_paid_body(monkeypatch):
+    from app import substack
+
+    async def fake_api(url, cookie_url=None):
+        if "/posts/by-id/" in url:
+            return {"post": {"title": "t", "body_html": _html(3900),
+                             "audience": "only_paid", "wordcount": 3878, "id": 99}}
+        return {"title": "t", "body_html": _html(1261),
+                "audience": "only_paid", "wordcount": 3878, "id": 99}
+
+    monkeypatch.setattr(substack, "_api_json", fake_api)
+    post = _run(substack.fetch_post("noahpinion", "some-post"))
+    assert post["accessible"] is True
+    assert post["delivered_words"] == 3900
+
+
+def test_fetch_post_keeps_truncated_when_by_id_also_truncated(monkeypatch):
+    from app import substack
+
+    async def fake_api(url, cookie_url=None):
+        if "/posts/by-id/" in url:
+            return {"post": {"title": "t", "body_html": _html(1261),
+                             "audience": "only_paid", "wordcount": 3878, "id": 99}}
+        return {"title": "t", "body_html": _html(1261),
+                "audience": "only_paid", "wordcount": 3878, "id": 99}
+
+    monkeypatch.setattr(substack, "_api_json", fake_api)
+    post = _run(substack.fetch_post("noahpinion", "some-post"))
+    assert post["accessible"] is False

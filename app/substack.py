@@ -45,11 +45,9 @@ def substack_ref(source: SourceDef, link: str) -> tuple[str, str] | None:
     return (sub, slug) if slug else None
 
 
-async def fetch_post(sub: str, slug: str) -> dict | None:
-    """Return {title, body_html, cover_image, audience, accessible} or None."""
-    url = f"https://{sub}.substack.com/api/v1/posts/{slug}"
+async def _api_json(url: str, cookie_url: str | None = None) -> dict | None:
     headers = {"User-Agent": UA, "Accept": "application/json"}
-    cookie = _cookie_for(f"https://{sub}.substack.com/")
+    cookie = _cookie_for(cookie_url or url)
     if cookie:
         headers["Cookie"] = cookie
     try:
@@ -57,11 +55,33 @@ async def fetch_post(sub: str, slug: str) -> dict | None:
                                      headers=headers) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            data = resp.json()
+            return resp.json()
     except Exception as exc:
-        log.warning("substack API failed for %s/%s: %s", sub, slug, exc)
+        log.warning("substack API failed for %s: %s", url, exc)
         return None
-    return post_from_api(data)
+
+
+async def fetch_post(sub: str, slug: str) -> dict | None:
+    """Return {title, body_html, cover_image, audience, accessible, ...} or None."""
+    data = await _api_json(f"https://{sub}.substack.com/api/v1/posts/{slug}")
+    if data is None:
+        return None
+    post = post_from_api(data)
+    if not post["accessible"] and data.get("id"):
+        # Some subscription types (e.g. reader-app billing, unlike web/Stripe
+        # subs) are honored by the substack.com host but NOT the publication
+        # subdomain: the same session gets a truncated body from
+        # {sub}.substack.com yet the full one from substack.com's by-id
+        # endpoint (noahpinion, 2026-07-24).
+        alt = await _api_json(
+            f"https://substack.com/api/v1/posts/by-id/{data['id']}")
+        if alt and isinstance(alt.get("post"), dict):
+            alt_post = post_from_api(alt["post"])
+            if alt_post["accessible"]:
+                log.info("substack by-id fallback recovered the full body "
+                         "for %s/%s", sub, slug)
+                return alt_post
+    return post
 
 
 def post_from_api(data: dict) -> dict:
