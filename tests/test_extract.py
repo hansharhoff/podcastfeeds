@@ -115,3 +115,26 @@ def test_mark_dialogue_continuation_inherits_speaker():
     ]
     out = mark_dialogue(segs)
     assert out[1] == {"type": "dialogue", "speaker": "Alice", "text": "A continuation with no label."}
+
+
+# ── per-publication sessions: a host-specific cookie key must win over the
+#    generic substack.com one (noahpinion sub lives on another account) ────
+
+def test_cookie_for_prefers_most_specific_domain(monkeypatch):
+    from app import extract
+    monkeypatch.setattr("app.config.load_cookies", lambda: {
+        "substack.com": "substack.sid=MAIN",
+        "noahpinion.substack.com": "substack.sid=GMAIL",
+    })
+    assert extract._cookie_for("https://noahpinion.substack.com/api/v1/posts/x") == "substack.sid=GMAIL"
+    assert extract._cookie_for("https://matthewyglesias.substack.com/feed") == "substack.sid=MAIN"
+
+
+def test_cookie_for_specific_key_wins_regardless_of_dict_order(monkeypatch):
+    from app import extract
+    monkeypatch.setattr("app.config.load_cookies", lambda: {
+        "noahpinion.substack.com": "substack.sid=GMAIL",
+        "substack.com": "substack.sid=MAIN",
+    })
+    assert extract._cookie_for("https://noahpinion.substack.com/") == "substack.sid=GMAIL"
+    assert extract._cookie_for("https://substack.com/") == "substack.sid=MAIN"

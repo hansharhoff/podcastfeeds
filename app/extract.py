@@ -56,16 +56,22 @@ def _blocked_target(url: str) -> bool:
 
 def _cookie_for(url: str) -> str:
     """Match the request host against configured cookie domains (suffix match),
-    so paid publications are fetched as the logged-in subscriber."""
+    so paid publications are fetched as the logged-in subscriber. The most
+    specific (longest) matching domain wins, so a per-publication session
+    (e.g. "noahpinion.substack.com" for a sub that lives on a second account)
+    overrides the generic "substack.com" one."""
     from urllib.parse import urlparse
 
     from .config import load_cookies
 
     host = urlparse(url).netloc.lower()
+    best = ""
+    best_len = -1
     for domain, cookie in load_cookies().items():
-        if host == domain or host.endswith("." + domain.lstrip(".")):
-            return cookie
-    return ""
+        bare = domain.lstrip(".")
+        if (host == bare or host.endswith("." + bare)) and len(bare) > best_len:
+            best, best_len = cookie, len(bare)
+    return best
 
 
 async def fetch_html(url: str) -> str:
