@@ -93,13 +93,13 @@ path; these are hardening, testability, and maintainability items.
       248, 267 were legitimate previews, not fetch failures. Entitlement is
       now explicit (`paid: true` per source); the probe
       (scripts/check_substack_access.py) sentinels only verified-active subs.
-- [ ] noahpinion paid access: the paid sub is NOT on the substack.com account
-      behind the cookie ({sub}.substack.com/api/v1/subscription → 404 there,
-      while the profile list misleadingly says "subscribed"). Hans: find which
-      email the sub is under (To: line of the newsletter) and either move it
-      to the main account or supply a www.noahpinion.blog domain cookie (then
-      extend fetch_post to use the custom-domain API for that source). Until
-      then noahpinion paid posts defer as pending.
+- [x] noahpinion paid access — RESOLVED 2026-07-24, and the "another account"
+      theory above was wrong: the sub IS on the same account, but it's billed
+      via the reader app, which the publication-subdomain API doesn't honor
+      ({sub}.substack.com/api/v1/subscription → 404, truncated body) while the
+      substack.com host does. `fetch_post` now falls back to
+      substack.com/api/v1/posts/by-id/{id} when a paid body arrives truncated.
+      Covered by tests; ep 243 regenerated in full.
 
 ## Observability
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
