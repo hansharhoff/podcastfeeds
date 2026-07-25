@@ -150,6 +150,19 @@ notes/changelogs), `prefer_existing_audio`, `digest_max_items`.
   change `BASE_URL`, run `tailscale serve` there).
 - Logs: `docker compose logs -f`. Manual poll: button in the UI or
   `POST /{token}/api/poll`.
+- **Cookie-health cron** — on a new install, add a daily host crontab entry so
+  an expired `substack.sid` is caught the same morning instead of by a bad
+  episode (`crontab -e`):
+
+  ```cron
+  43 7 * * * /home/hans/workspaces/podcastfeeds/scripts/cron_cookie_health.sh
+  ```
+
+  It runs `scripts/check_substack_access.py` (live probes of known-paid posts
+  through the real fetch path) and appends the verdict to
+  `data/cookie-health.log`. The in-app admin banner is the primary alert; this
+  cron is the independent early-warning record. Requires cron to be running in
+  the distro (`systemctl status cron` — enabled by default under WSL2 systemd).
 
 ## Development
 
