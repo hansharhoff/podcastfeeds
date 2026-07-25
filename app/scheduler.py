@@ -49,6 +49,18 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1, coalesce=True,
     )
 
+    # Paid-access health: catches an expired substack.sid within hours instead
+    # of days (July 2026 lesson). Runs at boot and every 6h; the admin page
+    # shows a banner while any paid source is broken.
+    from .health import check_paid_access
+
+    scheduler.add_job(
+        check_paid_access, IntervalTrigger(hours=6), id="paid-health",
+        max_instances=1, coalesce=True, misfire_grace_time=3600,
+    )
+    scheduler.add_job(check_paid_access, "date", id="boot:paid-health",
+                      misfire_grace_time=None)
+
     # First pass shortly after boot so a fresh install produces episodes immediately.
     for source in config.sources:
         if source.type in ("rss", "breaking"):

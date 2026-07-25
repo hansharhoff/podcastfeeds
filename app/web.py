@@ -137,11 +137,13 @@ async def index(request: Request, token: str):
             for s in config.sources if s.type in ("rss", "breaking", "inbox")
         ],
     }
+    from .health import LAST as paid_health
+
     return templates.TemplateResponse(request, "index.html", {
         "groups": groups, "decisions": decisions, "feeds": feeds,
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
-        "el": el,
+        "el": el, "paid_health": paid_health,
     })
 
 

@@ -30,6 +30,19 @@
 <body>
 <h1>🎙 podcastfeeds</h1>
 
+{% set broken = paid_health.results | selectattr('ok', 'equalto', false) | list %}
+{% if broken %}
+<div style="background:#7a2e1f;color:#fff;padding:.7em 1em;border-radius:6px;margin:.5em 0 1em;">
+  ⚠ <strong>Paid access broken</strong> for
+  {% for r in broken %}{{ r.name }} ({{ r.delivered }}/{{ r.wordcount }} words){% if not loop.last %}, {% endif %}{% endfor %}
+  — the <code>substack.sid</code> in <code>config/secrets.yaml</code> has likely expired.
+  Paid posts are deferred (no previews published) until it's refreshed.
+  <small class="muted" style="color:#f3d9d2;">checked {{ paid_health.checked_at }}</small>
+</div>
+{% elif paid_health.results %}
+<p><small class="muted">Paid access ✓ ({{ paid_health.results | length }} source{{ 's' if paid_health.results|length != 1 }} checked {{ paid_health.checked_at }})</small></p>
+{% endif %}
+
 <h2>Share an article</h2>
 <form class="submit-form" method="post" action="/{{ token }}/api/submit">
   <input type="url" name="url" placeholder="https://… article URL" required>

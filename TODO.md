@@ -102,6 +102,10 @@ path; these are hardening, testability, and maintainability items.
       Covered by tests; ep 243 regenerated in full.
 
 ## Observability
+- [x] In-app paid-access health check (`app/health.py`): every 6h + at boot,
+      fetch each `paid: true` source's newest paid post through the real
+      fetch path; admin banner + WARNING log on failure. Survives independent
+      of any external monitoring session. Covered by tests.
 - [ ] Per-source counters (generated / skipped / errored) and last-poll time,
       surfaced in the admin UI, so silent failures become visible.
 - [ ] Consider structured logging (JSON) for easier grepping across restarts.
