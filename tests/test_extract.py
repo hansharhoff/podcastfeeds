@@ -138,3 +138,37 @@ def test_cookie_for_specific_key_wins_regardless_of_dict_order(monkeypatch):
     })
     assert extract._cookie_for("https://noahpinion.substack.com/") == "substack.sid=GMAIL"
     assert extract._cookie_for("https://substack.com/") == "substack.sid=MAIN"
+
+
+# ── nested lists must not narrate passages twice (ep 236 feedback,
+#    2026-07-25): child.iter("li") visited nested <li> AND the outer <li>'s
+#    text_content() already contained them, so every nested item was read
+#    twice. Zvi's nested-comment style hit this hard. ──
+
+def test_segments_from_clean_html_nested_lists_no_duplication():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ol>"
+        "<li><p>Catastrophic misuse</p>"
+        "<ol><li><p>Boaz thinks cyber is defense dominant.</p></li>"
+        "<li><p>For CBRN defenders need an edge.</p></li></ol></li>"
+        "<li><p>Second top-level point</p></li>"
+        "</ol>"
+    )
+    _, segments = segments_from_clean_html(html)
+    texts = [s["text"] for s in segments if s["type"] == "text"]
+    joined = " ".join(texts)
+    assert joined.count("Boaz thinks cyber is defense dominant.") == 1
+    assert joined.count("For CBRN defenders need an edge.") == 1
+    assert joined.count("Catastrophic misuse") == 1
+    assert joined.count("Second top-level point") == 1
+    # nested items still present as their own segments, in reading order
+    assert texts.index("Catastrophic misuse") < texts.index(
+        "Boaz thinks cyber is defense dominant.")
+
+
+def test_segments_from_clean_html_flat_list_unchanged():
+    from app.extract import segments_from_clean_html
+    html = "<ul><li>alpha one</li><li>beta two</li></ul>"
+    _, segments = segments_from_clean_html(html)
+    assert [s["text"] for s in segments] == ["alpha one", "beta two"]

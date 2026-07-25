@@ -163,6 +163,25 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             el.tag == "img"
         )
 
+    def _walk_list(lst):
+        # Each <li>'s OWN text (nested lists excluded), then recurse into the
+        # nested lists — otherwise the outer item's text_content() already
+        # contains every nested item and they get narrated twice (ep 236).
+        for li in lst.iterchildren("li"):
+            parts = [li.text or ""]
+            nested = []
+            for sub in li:
+                if isinstance(sub.tag, str) and sub.tag in ("ul", "ol"):
+                    nested.append(sub)
+                else:
+                    parts.append(sub.text_content())
+                parts.append(sub.tail or "")
+            t = " ".join(p.strip() for p in parts if p and p.strip())
+            if t:
+                segments.append({"type": "text", "text": t})
+            for sub in nested:
+                _walk_list(sub)
+
     def walk(el):
         for child in el:
             tag = child.tag if isinstance(child.tag, str) else ""
@@ -191,10 +210,7 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
                     if img.get("src", "").startswith("http"):
                         segments.append({"type": "image", "src": img.get("src"), "caption": ""})
             elif tag in ("ul", "ol"):
-                for li in child.iter("li"):
-                    t = li.text_content().strip()
-                    if t:
-                        segments.append({"type": "text", "text": t})
+                _walk_list(child)
             else:
                 walk(child)  # descend into wrappers (div, section, article, a…)
 

@@ -101,6 +101,15 @@ path; these are hardening, testability, and maintainability items.
       substack.com/api/v1/posts/by-id/{id} when a paid body arrives truncated.
       Covered by tests; ep 243 regenerated in full.
 
+## Reliability (from ep. 236 feedback, 2026-07-25)
+- [x] Nested lists narrated twice: `segments_from_clean_html` used
+      `child.iter("li")`, so an outer `<li>`'s text_content() (which already
+      contains its nested list) AND each nested `<li>` were both emitted —
+      Zvi's nested-comment style repeated dozens of passages (ep 236). Now
+      each `<li>` contributes only its own text and nested lists recurse.
+      Covered by tests; backtested against the live post (37 repeated
+      chunks → 1, which is genuine prose repetition).
+
 ## Observability
 - [x] In-app paid-access health check (`app/health.py`): every 6h + at boot,
       fetch each `paid: true` source's newest paid post through the real
