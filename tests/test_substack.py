@@ -99,3 +99,24 @@ def test_fetch_post_keeps_truncated_when_by_id_also_truncated(monkeypatch):
     monkeypatch.setattr(substack, "_api_json", fake_api)
     post = _run(substack.fetch_post("noahpinion", "some-post"))
     assert post["accessible"] is False
+
+
+# ── ep 312 defer-loop (2026-07-25): a FULL paid body that happens to embed a
+#    subscribe-CTA block tripped is_paywalled and deferred forever. When the
+#    API provides wordcount, it alone decides; the text heuristic is only a
+#    fallback for responses without wordcount. ──
+
+def test_full_paid_body_with_embedded_cta_is_accessible(monkeypatch):
+    from app import substack
+    monkeypatch.setattr(substack, "is_paywalled", lambda body, html: True)
+    post = substack.post_from_api({"title": "t", "body_html": _html(1866),
+                                   "audience": "only_paid", "wordcount": 1830})
+    assert post["accessible"] is True
+
+
+def test_no_wordcount_still_falls_back_to_paywall_text(monkeypatch):
+    from app import substack
+    monkeypatch.setattr(substack, "is_paywalled", lambda body, html: True)
+    post = substack.post_from_api({"title": "t", "body_html": _html(500),
+                                   "audience": "only_paid"})
+    assert post["accessible"] is False

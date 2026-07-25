@@ -97,10 +97,16 @@ def post_from_api(data: dict) -> dict:
     audience = data.get("audience") or "everyone"
     wordcount = int(data.get("wordcount") or 0)
     delivered = _delivered_words(body_html)
-    truncated = wordcount > 0 and delivered < _TRUNCATION_RATIO * wordcount
-    accessible = audience == "everyone" or (
-        bool(body_html) and not truncated and not is_paywalled("", body_html)
-    )
+    if audience == "everyone":
+        accessible = True
+    elif wordcount > 0:
+        # wordcount alone decides: a full body can embed a subscribe-CTA block
+        # that trips the is_paywalled text heuristic (ep 312 defer-loop,
+        # 2026-07-25). The heuristic is only a fallback when wordcount is
+        # missing.
+        accessible = bool(body_html) and delivered >= _TRUNCATION_RATIO * wordcount
+    else:
+        accessible = bool(body_html) and not is_paywalled("", body_html)
     return {
         "title": data.get("title") or "",
         "body_html": body_html,
