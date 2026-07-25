@@ -97,9 +97,13 @@ path; these are hardening, testability, and maintainability items.
       theory above was wrong: the sub IS on the same account, but it's billed
       via the reader app, which the publication-subdomain API doesn't honor
       ({sub}.substack.com/api/v1/subscription → 404, truncated body) while the
-      substack.com host does. `fetch_post` now falls back to
-      substack.com/api/v1/posts/by-id/{id} when a paid body arrives truncated.
-      Covered by tests; ep 243 regenerated in full.
+      substack.com host does. Root-cause fix 2026-07-25: `fetch_post`
+      consults substack.com/api/v1/posts/by-id/{id} for EVERY paid post
+      (routing by `audience`, not the truncation heuristic — which a missing
+      `wordcount` could fool into skipping the honoring host) and keeps the
+      fuller body; the subdomain result stands when by-id is not fuller
+      (per-publication sessions). Covered by tests; ep 243 regenerated in
+      full.
 
 ## Reliability (from ep. 236 feedback, 2026-07-25)
 - [x] Nested lists narrated twice: `segments_from_clean_html` used

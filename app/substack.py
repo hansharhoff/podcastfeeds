@@ -67,20 +67,28 @@ async def fetch_post(sub: str, slug: str) -> dict | None:
     if data is None:
         return None
     post = post_from_api(data)
-    if not post["accessible"] and data.get("id"):
-        # Some subscription types (e.g. reader-app billing, unlike web/Stripe
-        # subs) are honored by the substack.com host but NOT the publication
-        # subdomain: the same session gets a truncated body from
-        # {sub}.substack.com yet the full one from substack.com's by-id
-        # endpoint (noahpinion, 2026-07-24).
-        alt = await _api_json(
-            f"https://substack.com/api/v1/posts/by-id/{data['id']}")
-        if alt and isinstance(alt.get("post"), dict):
-            alt_post = post_from_api(alt["post"])
-            if alt_post["accessible"]:
-                log.info("substack by-id fallback recovered the full body "
-                         "for %s/%s", sub, slug)
-                return alt_post
+    if post["audience"] == "everyone" or not data.get("id"):
+        return post
+    # Entitlement honoring is host-dependent: the publication subdomain
+    # honors web/Stripe-billed subs only, while the substack.com host also
+    # honors reader-app-billed ones (noahpinion, 2026-07-24). Billing type
+    # is not detectable up front ({sub}.substack.com/api/v1/subscription
+    # 404s for reader-app subs), so EVERY paid post consults the by-id
+    # endpoint and the fuller body wins. Routing rides on `audience` — a
+    # definitive API field — never on the truncation heuristic, which a
+    # missing `wordcount` can fool into skipping the one host that honors
+    # the entitlement. The subdomain fetch stays first: it resolves
+    # slug -> id and carries per-publication sessions the generic
+    # substack.com cookie would not.
+    alt = await _api_json(
+        f"https://substack.com/api/v1/posts/by-id/{data['id']}")
+    if alt and isinstance(alt.get("post"), dict):
+        alt_post = post_from_api(alt["post"])
+        if alt_post["delivered_words"] > post["delivered_words"]:
+            log.info("substack by-id host delivered the fuller paid body "
+                     "for %s/%s (%d vs %d words)", sub, slug,
+                     alt_post["delivered_words"], post["delivered_words"])
+            return alt_post
     return post
 
 

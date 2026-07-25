@@ -61,26 +61,36 @@ def test_post_from_api_carries_wordcount_for_provenance():
     assert post["delivered_words"] == 60
 
 
-# ── by-id fallback: some subscription types (reader-app billing) are honored
-#    by the substack.com host but NOT the publication subdomain (noahpinion,
-#    2026-07-24). When the subdomain returns a truncated paid body, fetch_post
-#    must retry substack.com/api/v1/posts/by-id/{id} and use a full result. ──
+# ── by-id host routing: entitlement honoring is host-dependent — the
+#    publication subdomain honors web/Stripe-billed subs only; the
+#    substack.com host also honors reader-app-billed ones (noahpinion,
+#    2026-07-24). Billing type is not detectable up front, so fetch_post
+#    consults substack.com/api/v1/posts/by-id/{id} for EVERY paid post
+#    (routing by `audience`, never by the truncation heuristic) and the
+#    fuller delivered body wins. ──
 
 def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-def test_fetch_post_falls_back_to_by_id_for_truncated_paid_body(monkeypatch):
-    from app import substack
-
+def _fake_api(subdomain_json, by_id_json, calls=None):
     async def fake_api(url, cookie_url=None):
+        if calls is not None:
+            calls.append(url)
         if "/posts/by-id/" in url:
-            return {"post": {"title": "t", "body_html": _html(3900),
-                             "audience": "only_paid", "wordcount": 3878, "id": 99}}
-        return {"title": "t", "body_html": _html(1261),
-                "audience": "only_paid", "wordcount": 3878, "id": 99}
+            return by_id_json
+        return subdomain_json
 
-    monkeypatch.setattr(substack, "_api_json", fake_api)
+    return fake_api
+
+
+def test_fetch_post_uses_by_id_for_truncated_paid_body(monkeypatch):
+    from app import substack
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(1261),
+         "audience": "only_paid", "wordcount": 3878, "id": 99},
+        {"post": {"title": "t", "body_html": _html(3900),
+                  "audience": "only_paid", "wordcount": 3878, "id": 99}}))
     post = _run(substack.fetch_post("noahpinion", "some-post"))
     assert post["accessible"] is True
     assert post["delivered_words"] == 3900
@@ -88,17 +98,70 @@ def test_fetch_post_falls_back_to_by_id_for_truncated_paid_body(monkeypatch):
 
 def test_fetch_post_keeps_truncated_when_by_id_also_truncated(monkeypatch):
     from app import substack
-
-    async def fake_api(url, cookie_url=None):
-        if "/posts/by-id/" in url:
-            return {"post": {"title": "t", "body_html": _html(1261),
-                             "audience": "only_paid", "wordcount": 3878, "id": 99}}
-        return {"title": "t", "body_html": _html(1261),
-                "audience": "only_paid", "wordcount": 3878, "id": 99}
-
-    monkeypatch.setattr(substack, "_api_json", fake_api)
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(1261),
+         "audience": "only_paid", "wordcount": 3878, "id": 99},
+        {"post": {"title": "t", "body_html": _html(1261),
+                  "audience": "only_paid", "wordcount": 3878, "id": 99}}))
     post = _run(substack.fetch_post("noahpinion", "some-post"))
     assert post["accessible"] is False
+
+
+def test_fetch_post_consults_by_id_even_when_subdomain_body_is_full(monkeypatch):
+    # Routing must not depend on the truncation verdict: a full subdomain
+    # body still consults the by-id host, and stays the result when by-id
+    # is not fuller (e.g. a per-publication session the substack.com host
+    # cookie does not carry).
+    from app import substack
+    calls: list = []
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(1290),
+         "audience": "only_paid", "wordcount": 1301, "id": 99},
+        {"post": {"title": "t", "body_html": _html(60),
+                  "audience": "only_paid", "wordcount": 1301, "id": 99}},
+        calls))
+    post = _run(substack.fetch_post("phillipspobrien", "some-post"))
+    assert post["accessible"] is True
+    assert post["delivered_words"] == 1290
+    assert any("/posts/by-id/99" in url for url in calls)
+
+
+def test_fetch_post_by_id_wins_when_missing_wordcount_hides_truncation(monkeypatch):
+    # The pre-2026-07-25 trigger gap: no wordcount + no CTA judged a
+    # truncated preview accessible, so the by-id host was never consulted.
+    # audience-based routing fetches it anyway and the fuller body wins.
+    from app import substack
+    monkeypatch.setattr(substack, "is_paywalled", lambda body, html: False)
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(600),
+         "audience": "only_paid", "id": 99},
+        {"post": {"title": "t", "body_html": _html(2000),
+                  "audience": "only_paid", "id": 99}}))
+    post = _run(substack.fetch_post("noahpinion", "some-post"))
+    assert post["delivered_words"] == 2000
+
+
+def test_fetch_post_free_post_never_consults_by_id(monkeypatch):
+    from app import substack
+    calls: list = []
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(500),
+         "audience": "everyone", "wordcount": 500, "id": 99},
+        None, calls))
+    post = _run(substack.fetch_post("phillipspobrien", "some-post"))
+    assert post["accessible"] is True
+    assert not any("/posts/by-id/" in url for url in calls)
+
+
+def test_fetch_post_survives_by_id_request_failure(monkeypatch):
+    from app import substack
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(1290),
+         "audience": "only_paid", "wordcount": 1301, "id": 99},
+        None))
+    post = _run(substack.fetch_post("phillipspobrien", "some-post"))
+    assert post["accessible"] is True
+    assert post["delivered_words"] == 1290
 
 
 # ── ep 312 defer-loop (2026-07-25): a FULL paid body that happens to embed a
