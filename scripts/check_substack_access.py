@@ -20,9 +20,9 @@ from app.substack import fetch_post  # noqa: E402
 # has an ACTIVE paid subscription to. Verify entitlement before adding a probe:
 # web/Stripe subs answer 200 on {sub}.substack.com/api/v1/subscription; reader-
 # app-billed subs (noahpinion) 404 there yet deliver via the substack.com by-id
-# fallback in fetch_post — so a fetch_post probe is the ground truth. Probing a
-# pub without any sub reports a false COOKIE-EXPIRED (2026-07-23 lesson:
-# matthewyglesias was free_signup all along).
+# host, which fetch_post consults for every paid post — so a fetch_post probe
+# is the ground truth. Probing a pub without any sub reports a false
+# COOKIE-EXPIRED (2026-07-23 lesson: matthewyglesias was free_signup all along).
 PROBES = [
     ("phillipspobrien", "bravery-does-not-win-wars"),
     ("noahpinion", "americas-political-economy-is-pretty"),
