@@ -86,3 +86,31 @@ def test_check_paid_access_flags_broken_access(monkeypatch):
 
     snapshot = _run(check_paid_access())
     assert snapshot["results"][0]["ok"] is False
+
+
+# ── stuck-pending watchdog: episodes sitting in pending/processing for >12h
+#    (the ep-312 defer-loop class) must surface, not rot silently. ──
+
+def test_stuck_episodes_flags_old_pending_and_processing():
+    from datetime import timedelta
+
+    from app import db
+    from app.db import Episode, utcnow
+    from app.health import stuck_episodes
+
+    with db.session() as s:
+        s.add(Episode(source_slug="a", guid="g-old-pending", title="Old pending",
+                      status="pending", created_at=utcnow() - timedelta(hours=13)))
+        s.add(Episode(source_slug="a", guid="g-old-processing", title="Old processing",
+                      status="processing", created_at=utcnow() - timedelta(hours=13)))
+        s.add(Episode(source_slug="a", guid="g-fresh", title="Fresh pending",
+                      status="pending", created_at=utcnow() - timedelta(hours=1)))
+        s.add(Episode(source_slug="a", guid="g-ready", title="Old ready",
+                      status="ready", created_at=utcnow() - timedelta(hours=48)))
+        s.commit()
+
+    stuck = stuck_episodes(max_age_hours=12)
+    titles = sorted(e["title"] for e in stuck)
+    assert titles == ["Old pending", "Old processing"]
+    assert all(set(e) >= {"id", "title", "status", "source_slug", "age_hours"}
+               for e in stuck)

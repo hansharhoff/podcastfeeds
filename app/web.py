@@ -138,12 +138,13 @@ async def index(request: Request, token: str):
         ],
     }
     from .health import LAST as paid_health
+    from .health import stuck_episodes
 
     return templates.TemplateResponse(request, "index.html", {
         "groups": groups, "decisions": decisions, "feeds": feeds,
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
-        "el": el, "paid_health": paid_health,
+        "el": el, "paid_health": paid_health, "stuck": stuck_episodes(),
     })
 
 

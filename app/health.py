@@ -9,10 +9,14 @@ failures also log a WARNING.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from urllib.parse import urlparse
 
+from sqlmodel import select
+
+from . import db
 from .config import load_config
-from .db import utcnow
+from .db import Episode, utcnow
 from .substack import _api_json, fetch_post
 
 log = logging.getLogger("podcastfeeds")
@@ -29,6 +33,28 @@ def newest_paid_slug(archive_items: list | None) -> str | None:
         if (item.get("audience") or "everyone") != "everyone" and item.get("slug"):
             return item["slug"]
     return None
+
+
+def stuck_episodes(max_age_hours: int = 12) -> list[dict]:
+    """Episodes sitting in pending/processing longer than a poll cycle should
+    ever leave them — the ep-312 defer-loop sat invisible for 28h because only
+    access was monitored, not pipeline outcomes. Rendered by the admin page."""
+    # SQLite hands datetimes back naive; utcnow() is aware — compare naive-UTC.
+    now = utcnow().replace(tzinfo=None)
+    cutoff = now - timedelta(hours=max_age_hours)
+    with db.session() as s:
+        rows = s.exec(
+            select(Episode).where(
+                Episode.status.in_(("pending", "processing")),  # type: ignore[attr-defined]
+                Episode.created_at < cutoff,
+            ).order_by(Episode.created_at)
+        ).all()
+        return [{
+            "id": e.id, "title": e.title, "status": e.status,
+            "source_slug": e.source_slug, "error": e.error,
+            "age_hours": round((now - e.created_at.replace(tzinfo=None))
+                               .total_seconds() / 3600),
+        } for e in rows]
 
 
 async def check_paid_access() -> dict:

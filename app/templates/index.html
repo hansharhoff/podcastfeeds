@@ -43,6 +43,13 @@
 <p><small class="muted">Paid access ✓ ({{ paid_health.results | length }} source{{ 's' if paid_health.results|length != 1 }} checked {{ paid_health.checked_at }})</small></p>
 {% endif %}
 
+{% if stuck %}
+<div style="background:#7a5a1f;color:#fff;padding:.7em 1em;border-radius:6px;margin:.5em 0 1em;">
+  ⏳ <strong>{{ stuck|length }} episode{{ 's' if stuck|length != 1 }} stuck in the pipeline</strong> (pending/processing &gt; 12h):
+  {% for e in stuck %}#{{ e.id }} {{ e.title|truncate(45) }} ({{ e.status }}, {{ e.age_hours }}h{% if e.error %} — {{ e.error|truncate(60) }}{% endif %}){% if not loop.last %}; {% endif %}{% endfor %}
+</div>
+{% endif %}
+
 <h2>Share an article</h2>
 <form class="submit-form" method="post" action="/{{ token }}/api/submit">
   <input type="url" name="url" placeholder="https://… article URL" required>
