@@ -1,6 +1,7 @@
 """TickTick phase 2: queue model, kind detection, poller, generation routing."""
 import asyncio
 import json
+import logging
 
 from sqlmodel import select
 
@@ -67,6 +68,7 @@ class _FakeClient:
 
     def __init__(self, projects, tasks_by_pid, data_status=200):
         self._projects, self._tasks, self._data_status = projects, tasks_by_pid, data_status
+        self.posted: list[str] = []  # any attempted POST is recorded here, then raises
 
     def __call__(self, *args, **kwargs):  # the code calls httpx.AsyncClient(...)
         return self
@@ -84,6 +86,13 @@ class _FakeClient:
         if self._data_status != 200:
             return _Resp({}, self._data_status)
         return _Resp({"tasks": self._tasks.get(pid, [])})
+
+    async def post(self, url, *args, **kwargs):
+        # Recorded *before* raising so the read-only assertion still catches a
+        # reintroduced POST even though poll_ticktick's whole body runs inside
+        # a bare try/except that would otherwise swallow this exception.
+        self.posted.append(url)
+        raise AssertionError(f"poll_ticktick attempted a POST to {url} (read-only contract)")
 
 
 def _write_conf(tmp_token="tok"):
@@ -122,14 +131,38 @@ def test_poll_upserts_open_tasks_and_dedupes(monkeypatch):
     assert all(r.status == "queued" for r in rows.values())
 
 
-def test_poll_never_writes_to_ticktick(monkeypatch):
-    """Read-only contract: the poller must never POST (no task completion)."""
+def test_poll_never_writes_to_ticktick(monkeypatch, caplog):
+    """Read-only contract: the poller must never POST (no task completion).
+
+    Pinned two independent ways, because poll_ticktick's entire body runs
+    inside a bare `try: ... except Exception: log.exception(...)` — a
+    reintroduced `await client.post(...)` would raise (since _FakeClient.post
+    always raises) but that exception would be swallowed and logged rather
+    than propagating, so a bare "must not raise" assertion alone is a soft
+    pin. Instead: (1) _FakeClient.post appends to `.posted` *before* raising,
+    so the call is recorded even though the exception itself gets caught —
+    asserting `.posted == []` catches a reintroduced POST regardless of the
+    swallow; and (2) caplog confirms the poll's try/except never actually
+    caught anything (i.e. nothing "failed" silently) during a supposedly
+    clean, read-only poll.
+
+    Uses a non-empty, still-open task list — not the empty list a prior draft
+    used — so that a regression reintroducing the old per-task "mark
+    complete" POST (which only fires while iterating actual open tasks) is
+    exercised at all; an empty task list would let such a regression through
+    for the wrong reason (the loop body simply never running), independent of
+    whether the exception it raises is swallowed.
+    """
     _write_conf()
     _clear_queue()
-    client = _FakeClient([{"id": "p1", "name": "Z Reading"}], {"p1": []})
-    client.post = None  # any attempted POST raises TypeError
+    tasks = {"p1": [{"id": "t-readonly-1", "title": "https://example.com/readonly",
+                     "status": 0, "createdTime": "2026-07-20T10:00:00.000+0000"}]}
+    client = _FakeClient([{"id": "p1", "name": "Z Reading"}], tasks)
     monkeypatch.setattr(ticktick.httpx, "AsyncClient", client)
-    _run(ticktick.poll_ticktick())  # must not raise
+    with caplog.at_level(logging.ERROR, logger="podcastfeeds"):
+        assert _run(ticktick.poll_ticktick()) == 1  # confirms the task loop actually ran
+    assert client.posted == []
+    assert "ticktick poll failed" not in caplog.text
 
 
 def test_gone_task_auto_dismissed_only_on_clean_poll(monkeypatch):
