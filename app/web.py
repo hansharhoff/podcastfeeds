@@ -137,14 +137,34 @@ async def index(request: Request, token: str):
             for s in config.sources if s.type in ("rss", "breaking", "inbox")
         ],
     }
+    # TickTick queue: queued items, plus generated ones whose episode errored
+    # (those stay visible with the error inline — spec §5).
+    from .db import TickTickItem
     from .health import LAST as paid_health
     from .health import stuck_episodes
+    with db.session() as s:
+        q_rows = s.exec(
+            select(TickTickItem)
+            .where(TickTickItem.status != "dismissed")
+            .order_by(TickTickItem.task_created.desc())  # type: ignore[union-attr]
+        ).all()
+        q_eps = {r.episode_id: s.get(Episode, r.episode_id)
+                 for r in q_rows if r.episode_id}
+    queue = []
+    for it in q_rows:
+        ep = q_eps.get(it.episode_id)
+        if it.status == "generated" and not (ep and ep.status == "error"):
+            continue  # healthy episode — it lives in the episode list now
+        queue.append({"item": it,
+                      "error": (ep.error if ep and ep.status == "error"
+                                else it.last_error)})
 
     return templates.TemplateResponse(request, "index.html", {
         "groups": groups, "decisions": decisions, "feeds": feeds,
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
         "el": el, "paid_health": paid_health, "stuck": stuck_episodes(),
+        "queue": queue,
     })
 
 
@@ -179,6 +199,36 @@ async def api_dismiss(token: str, episode_id: int):
             raise HTTPException(status_code=404)
         ep.feedback = f"accepted-as-is\n{ep.feedback}".strip()
         s.add(ep)
+        s.commit()
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/ticktick/generate/{item_id}")
+async def api_ticktick_generate(token: str, item_id: int, request: Request):
+    """Generate the episode for a queued TickTick item (the click is the
+    approval; mode applies to PDFs: summary|full)."""
+    _check(token)
+    form = await request.form()
+    mode = (form.get("mode") or "summary").strip()
+    from .ticktick import generate_item
+    try:
+        ep_id = await generate_item(item_id, mode=mode)
+    except ValueError:
+        raise HTTPException(status_code=404) from None
+    log.info("ticktick queue: item %s -> episode %s (mode=%s)", item_id, ep_id, mode)
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/ticktick/dismiss/{item_id}")
+async def api_ticktick_dismiss(token: str, item_id: int):
+    _check(token)
+    from .db import TickTickItem
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        if not item:
+            raise HTTPException(status_code=404)
+        item.status = "dismissed"
+        s.add(item)
         s.commit()
     return RedirectResponse(url=f"/{token}/", status_code=303)
 
