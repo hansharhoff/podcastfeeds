@@ -177,17 +177,30 @@ async def generate_item(item_id: int, mode: str = "summary") -> int:
             item.kind, item.url, item.title, item.notes, item.task_id)
     config = load_config()
     inbox = next(src for src in config.sources if src.type == "inbox")
-    if kind == "article":
-        ep_id = await submit_url(url, title=title)
-    elif kind == "pdf":
-        ep_id = _create_episode(inbox.slug, url, title, pdf_url(url))
-        source = SourceDef(**{**inbox.__dict__, "allow_pdf": True, "voice": "",
-                              "narrate_mode": "full" if mode == "full" else "summary"})
-        from .ingest import process_episode
-        spawn(process_episode(ep_id, source))
-    else:  # book — brief is generated first, then narrated as source_text
-        ep_id = _create_episode(inbox.slug, f"ticktick:{task_id}", title, "")
-        spawn(_render_book_brief(ep_id, item_id, inbox, title, notes))
+    try:
+        if kind == "article":
+            ep_id = await submit_url(url, title=title)
+        elif kind == "pdf":
+            ep_id = _create_episode(inbox.slug, url, title, pdf_url(url))
+            source = SourceDef(**{**inbox.__dict__, "allow_pdf": True, "voice": "",
+                                  "narrate_mode": "full" if mode == "full" else "summary"})
+            from .ingest import process_episode
+            spawn(process_episode(ep_id, source))
+        else:  # book — brief is generated first, then narrated as source_text
+            ep_id = _create_episode(inbox.slug, f"ticktick:{task_id}", title, "")
+            spawn(_render_book_brief(ep_id, item_id, inbox, title, notes))
+    except Exception as exc:
+        # Failures keep the item queued with the error shown inline in the
+        # queue row (spec §2/§5) — nothing vanishes silently, and the caller
+        # (Task 7's route) still sees the failure via the re-raise.
+        log.exception("ticktick: generate_item failed for item %s [%s]", item_id, kind)
+        with _db.session() as s:
+            item = s.get(TickTickItem, item_id)
+            item.status = "queued"
+            item.last_error = str(exc)[:300]
+            s.add(item)
+            s.commit()
+        raise
     with _db.session() as s:
         item = s.get(TickTickItem, item_id)
         item.status = "generated"

@@ -360,3 +360,23 @@ def test_generate_dismissed_item_refused():
                           status="dismissed", task_id="t-dis-1")
     with pytest.raises(ValueError):
         _run(ticktick.generate_item(item_id))
+
+
+def test_generate_missing_item_refused():
+    with pytest.raises(ValueError):
+        _run(ticktick.generate_item(999999))
+
+
+def test_generate_article_failure_requeues_item(monkeypatch):
+    async def boom(url, title="", language="auto"):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ticktick, "submit_url", boom)
+    item_id = _queue_item(kind="article", url="https://example.com/post",
+                          title="A post", task_id="t-art-fail-1")
+    with pytest.raises(RuntimeError):
+        _run(ticktick.generate_item(item_id))
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+    assert item.status == "queued"
+    assert "boom" in item.last_error
