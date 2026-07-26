@@ -6,6 +6,7 @@ import logging
 from sqlmodel import select
 
 from app import db, ticktick
+from app.config import SourceDef, load_config
 from app.db import TickTickItem
 from app.ticktick import detect_kind, pdf_url
 
@@ -184,3 +185,64 @@ def test_gone_task_auto_dismissed_only_on_clean_poll(monkeypatch):
     _run(ticktick.poll_ticktick())
     with db.session() as s:
         assert s.exec(select(TickTickItem)).first().status == "dismissed"
+
+
+# ── process_episode: PDF narration path behind SourceDef.allow_pdf ─────────
+
+def test_process_episode_narrates_pdf_when_allowed(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_fetch_pdf_text(url):
+        return "Deep learning content. " * 40  # >400 chars -> summary branch
+
+    async def fake_article_summary(title, body, language, link):
+        return "A short spoken summary.", "notes line", {"generator": "test"}
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 12345, 60
+
+    monkeypatch.setattr(ingest, "fetch_pdf_text", fake_fetch_pdf_text)
+    monkeypatch.setattr(ingest, "article_summary", fake_article_summary)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="https://example.com/x.pdf",
+                     title="A paper", link="https://example.com/x.pdf")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    source = SourceDef(**{**inbox.__dict__, "allow_pdf": True,
+                          "narrate_mode": "summary", "voice": ""})
+    _run(ingest.process_episode(ep_id, source))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "ready"
+    assert "summary" in done.provenance
+
+
+def test_process_episode_still_skips_pdf_without_allow_pdf():
+    from app import ingest
+    from app.db import Episode
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="https://example.com/y.pdf",
+                     title="Another paper", link="https://example.com/y.pdf")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))  # inbox has allow_pdf=False
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "skipped"
+    assert "PDF" in done.error
