@@ -204,3 +204,20 @@ def test_pdf_text_extracts_page_text():
 
     text = pdf_text(_mini_pdf("Attention is all you need."))
     assert "Attention is all you need." in text
+
+
+def _run_async(coro):
+    """Run an async coroutine the same way as test_health.py does."""
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_fetch_pdf_text_blocks_non_public_addresses():
+    import pytest
+
+    from app.extract import fetch_pdf_text
+
+    # Verify that fetch_pdf_text refuses to fetch from private addresses
+    # before making any network request (SSRF guard).
+    with pytest.raises(RuntimeError, match="refusing to fetch non-public address"):
+        _run_async(fetch_pdf_text("http://127.0.0.1:8000/document.pdf"))

@@ -121,6 +121,8 @@ def pdf_text(data: bytes) -> str:
 async def fetch_pdf_text(url: str) -> str:
     """Download a PDF and extract its text (queue-approved PDFs only — the
     RSS-side skip in ingest.process_episode stays)."""
+    if _blocked_target(url):
+        raise RuntimeError(f"refusing to fetch non-public address: {url}")
     headers = {"User-Agent": UA}
     async with httpx.AsyncClient(
         timeout=120, follow_redirects=True, headers=headers
