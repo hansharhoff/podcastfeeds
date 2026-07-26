@@ -15,8 +15,12 @@ from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import httpx
+from sqlmodel import select
 
-from .config import DATA_DIR
+from .config import DATA_DIR, SourceDef, load_config
+from .db import Episode, TickTickItem
+from .ingest import submit_url
+from .tasks import spawn
 
 
 def _parse_dt(value: str) -> datetime | None:
@@ -157,3 +161,103 @@ def _auto_dismiss(s, open_ids: set[str]) -> None:
             s.add(item)
             log.info("ticktick: auto-dismissed %s (task gone from TickTick)", item.title[:60])
     s.commit()
+
+
+async def generate_item(item_id: int, mode: str = "summary") -> int:
+    """Hans clicked Generate: create the episode for a queued item, routed by
+    kind (spec §2). The click IS the approval — nothing calls this
+    automatically. Returns the episode id."""
+    from . import db as _db
+
+    with _db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        if not item or item.status == "dismissed":
+            raise ValueError(f"no queued ticktick item {item_id}")
+        kind, url, title, notes, task_id = (
+            item.kind, item.url, item.title, item.notes, item.task_id)
+    config = load_config()
+    inbox = next(src for src in config.sources if src.type == "inbox")
+    if kind == "article":
+        ep_id = await submit_url(url, title=title)
+    elif kind == "pdf":
+        ep_id = _create_episode(inbox.slug, url, title, pdf_url(url))
+        source = SourceDef(**{**inbox.__dict__, "allow_pdf": True, "voice": "",
+                              "narrate_mode": "full" if mode == "full" else "summary"})
+        from .ingest import process_episode
+        spawn(process_episode(ep_id, source))
+    else:  # book — brief is generated first, then narrated as source_text
+        ep_id = _create_episode(inbox.slug, f"ticktick:{task_id}", title, "")
+        spawn(_render_book_brief(ep_id, item_id, inbox, title, notes))
+    with _db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        item.status = "generated"
+        item.episode_id = ep_id
+        item.last_error = ""
+        s.add(item)
+        s.commit()
+    log.info("ticktick: generated item %s [%s] -> episode %s", item_id, kind, ep_id)
+    return ep_id
+
+
+def _create_episode(slug: str, guid: str, title: str, link: str) -> int:
+    """Insert-or-reset an episode row (mirrors submit_url's dedup so a
+    re-Generate after an error retries instead of duplicating)."""
+    from . import db as _db
+
+    with _db.session() as s:
+        existing = s.exec(select(Episode).where(
+            Episode.source_slug == slug, Episode.guid == guid)).first()
+        if existing:
+            existing.status = "pending"
+            existing.error = ""
+            s.add(existing)
+            s.commit()
+            return existing.id
+        ep = Episode(source_slug=slug, guid=guid, title=title or "Untitled", link=link)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        return ep.id
+
+
+async def _render_book_brief(ep_id: int, item_id: int, inbox, title: str,
+                             notes: str) -> None:
+    """LLM book brief (spec §4): generate the spoken text, park it in
+    source_text, and let the normal pipeline narrate it (an episode with no
+    link falls back to source_text as its body). On failure the queue item
+    goes back to 'queued' with the error inline — nothing vanishes silently."""
+    from . import db as _db
+    from .ingest import process_episode
+    from .summarize import llm
+
+    prompt = (
+        "You are preparing a short podcast brief about a book someone added to "
+        "their reading list. Write 400-600 words of flowing spoken prose (no "
+        "headings, no lists, no markdown) covering: what the book is and who "
+        "wrote it, its core argument or story, its reception and context, and "
+        "why it might be worth reading. Open with a sentence making clear this "
+        "is a brief ABOUT the book, not the book itself. If you are not "
+        "confident you know this book, say so honestly and keep it short.\n\n"
+        f"Book reference: {title}" + (f"\nNotes: {notes}" if notes else "")
+    )
+    try:
+        brief = await llm(prompt)
+        with _db.session() as s:
+            ep = s.get(Episode, ep_id)
+            ep.source_text = brief
+            s.add(ep)
+            s.commit()
+        await process_episode(ep_id, inbox)
+    except Exception as exc:
+        log.exception("book brief failed for queue item %s", item_id)
+        with _db.session() as s:
+            ep = s.get(Episode, ep_id)
+            ep.status = "error"
+            ep.error = f"book brief failed: {exc}"[:300]
+            s.add(ep)
+            item = s.get(TickTickItem, item_id)
+            item.status = "queued"
+            item.last_error = str(exc)[:300]
+            item.episode_id = None
+            s.add(item)
+            s.commit()

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 
+import pytest
 from sqlmodel import select
 
 from app import db, ticktick
@@ -246,3 +247,116 @@ def test_process_episode_still_skips_pdf_without_allow_pdf():
         done = s.get(Episode, ep_id)
     assert done.status == "skipped"
     assert "PDF" in done.error
+
+
+# ── generate_item: kind-routed generation, triggered only by Hans' click ───
+#    (async-test convention: see _run() above — no pytest.mark.anyio here.)
+
+def _queue_item(**over):
+    defaults = {
+        "task_id": f"t-{over.get('kind', 'x')}-{id(over)}", "project": "Z Reading",
+        "title": "Item", "notes": "", "url": "", "kind": "book", "status": "queued",
+    }
+    defaults.update(over)
+    with db.session() as s:
+        item = TickTickItem(**defaults)
+        s.add(item)
+        s.commit()
+        s.refresh(item)
+        return item.id
+
+
+def test_generate_article_routes_to_submit_url(monkeypatch):
+    calls = {}
+
+    async def fake_submit_url(url, title="", language="auto"):
+        calls["url"], calls["title"] = url, title
+        return 42
+
+    monkeypatch.setattr(ticktick, "submit_url", fake_submit_url)
+    item_id = _queue_item(kind="article", url="https://example.com/post", title="A post")
+    ep_id = _run(ticktick.generate_item(item_id))
+    assert ep_id == 42 and calls["url"] == "https://example.com/post"
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+    assert item.status == "generated" and item.episode_id == 42
+
+
+def test_generate_pdf_spawns_allow_pdf_source(monkeypatch):
+    spawned = {}
+
+    def fake_spawn(coro):
+        spawned["coro"] = coro
+        coro.close()  # don't actually run the pipeline in this test
+
+    monkeypatch.setattr(ticktick, "spawn", fake_spawn)
+    item_id = _queue_item(kind="pdf", url="https://arxiv.org/abs/2401.00001",
+                          title="A paper", task_id="t-pdf-1")
+    ep_id = _run(ticktick.generate_item(item_id, mode="full"))
+    assert "coro" in spawned
+    with db.session() as s:
+        from app.db import Episode
+        ep = s.get(Episode, ep_id)
+        item = s.get(TickTickItem, item_id)
+    assert ep.link == "https://arxiv.org/pdf/2401.00001"  # abs -> pdf
+    assert ep.status == "pending"
+    assert item.status == "generated" and item.episode_id == ep_id
+
+
+def test_book_brief_renders_via_source_text(monkeypatch):
+    from app import ingest, summarize
+    from app.db import Episode
+
+    async def fake_llm(prompt, **kwargs):
+        assert "The Power Broker" in prompt
+        return "This is a brief about The Power Broker, not the book itself. ..."
+
+    processed = {}
+
+    async def fake_process_episode(ep_id, source):
+        processed["ep_id"] = ep_id
+
+    monkeypatch.setattr(summarize, "llm", fake_llm)
+    monkeypatch.setattr(ingest, "process_episode", fake_process_episode)
+    item_id = _queue_item(kind="book", title="The Power Broker",
+                          notes="Caro", task_id="t-book-1")
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        task_id = item.task_id
+    config = load_config()
+    inbox = next(s_ for s_ in config.sources if s_.type == "inbox")
+    ep_id = ticktick._create_episode(inbox.slug, f"ticktick:{task_id}",
+                                     "The Power Broker", "")
+    _run(ticktick._render_book_brief(ep_id, item_id, inbox,
+                                      "The Power Broker", "Caro"))
+    with db.session() as s:
+        ep = s.get(Episode, ep_id)
+    assert "brief about The Power Broker" in ep.source_text
+    assert processed["ep_id"] == ep_id
+
+
+def test_book_brief_failure_requeues_item(monkeypatch):
+    from app import summarize
+    from app.db import Episode
+
+    async def boom(prompt, **kwargs):
+        raise RuntimeError("shim down")
+
+    monkeypatch.setattr(summarize, "llm", boom)
+    item_id = _queue_item(kind="book", title="Some Book", task_id="t-book-2")
+    config = load_config()
+    inbox = next(s_ for s_ in config.sources if s_.type == "inbox")
+    ep_id = ticktick._create_episode(inbox.slug, "ticktick:t-book-2", "Some Book", "")
+    _run(ticktick._render_book_brief(ep_id, item_id, inbox, "Some Book", ""))
+    with db.session() as s:
+        ep = s.get(Episode, ep_id)
+        item = s.get(TickTickItem, item_id)
+    assert ep.status == "error"
+    assert item.status == "queued" and "shim down" in item.last_error
+
+
+def test_generate_dismissed_item_refused():
+    item_id = _queue_item(kind="article", url="https://example.com/z",
+                          status="dismissed", task_id="t-dis-1")
+    with pytest.raises(ValueError):
+        _run(ticktick.generate_item(item_id))
