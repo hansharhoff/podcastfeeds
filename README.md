@@ -115,10 +115,14 @@ notes/changelogs), `prefer_existing_audio`, `digest_max_items`.
   episodes (rejects are stored as status `skipped` so they aren't re-judged).
   Used to surface major AI-lab releases within ~20 minutes, alongside the daily
   digest.
-- **TickTick** — add a URL to a watched list and it becomes an inbox episode
-  (task auto-completed). Watched lists are set in `data/ticktick.json`
-  (`"lists": ["Z Reading", "Z Listening"]`). A watermark means only tasks
-  created *after* setup are processed — the existing backlog is never touched.
+- **TickTick** — tasks on watched lists land in an admin **approval queue**
+  (nothing generates on its own; the integration is read-only and never
+  completes your tasks — the whole backlog is imported). Each queued item is
+  classified article / PDF / book: articles become inbox episodes, PDFs are
+  text-extracted and summarized (or read in full — per-item choice), and
+  title-only book references get an LLM "book brief" episode. Completing a
+  task in TickTick auto-dismisses its queue item. Watched lists are set in
+  `data/ticktick.json` (`"lists": ["Z Reading", "Z Listening"]`).
   One-time setup: register an app at https://developer.ticktick.com/manage with
   redirect URI `http://127.0.0.1:8993/callback`, then
   `.venv/bin/python scripts/ticktick_auth.py CLIENT_ID CLIENT_SECRET`.
