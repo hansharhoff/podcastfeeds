@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
+from urllib.parse import urlparse
 
 import httpx
 
@@ -39,6 +40,27 @@ log = logging.getLogger("podcastfeeds")
 TOKENS_FILE = DATA_DIR / "ticktick.json"
 API = "https://api.ticktick.com/open/v1"
 URL_RE = re.compile(r"https?://\S+")
+
+
+def detect_kind(url: str) -> str:
+    """Queue-item kind heuristic (spec §1): no URL means a book reference;
+    .pdf paths and arxiv links are papers; everything else is an article."""
+    if not url:
+        return "book"
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if parsed.path.lower().endswith(".pdf") or host == "arxiv.org":
+        return "pdf"
+    return "article"
+
+
+def pdf_url(url: str) -> str:
+    """The direct-download URL for a kind=pdf item: arxiv abstract pages
+    map to their PDF; anything else is assumed to already be the PDF."""
+    parsed = urlparse(url)
+    if parsed.netloc.lower().removeprefix("www.") == "arxiv.org" and "/abs/" in parsed.path:
+        return url.replace("/abs/", "/pdf/")
+    return url
 
 
 def _load() -> dict | None:
