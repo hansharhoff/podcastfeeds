@@ -143,6 +143,35 @@
 </table>
 {% endif %}
 
+{% if queue %}
+<h2>📥 TickTick queue</h2>
+<p><small class="muted">Articles, PDFs, and book references from your watched TickTick lists. Generate creates the episode now — the click is the approval.</small></p>
+<table>
+  {% for row in queue %}{% set it = row.item %}
+  <tr>
+    <td>
+      <strong>[{{ it.kind }}]</strong>
+      {% if it.url %}<a href="{{ it.url }}" target="_blank" rel="noopener">{{ it.title|truncate(70) }}</a>{% else %}{{ it.title|truncate(70) }}{% endif %}
+      <small class="muted">{{ it.project }}{% if it.task_created %} · {{ it.task_created.strftime('%Y-%m-%d') }}{% endif %}</small>
+      {% if it.notes %}<br><small class="muted">{{ it.notes|truncate(120) }}</small>{% endif %}
+      {% if row.error %}<br><small class="muted">⚠ {{ row.error|truncate(160) }}</small>{% endif %}
+    </td>
+    <td class="row-actions">
+      {% if it.kind == 'pdf' %}
+      <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button name="mode" value="summary">summary</button></form>
+      <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button name="mode" value="full">full read</button></form>
+      {% elif it.kind == 'book' %}
+      <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button>brief</button></form>
+      {% else %}
+      <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button>generate</button></form>
+      {% endif %}
+      <form method="post" action="/{{ token }}/api/ticktick/dismiss/{{ it.id }}"><button>dismiss</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 <h2>Recent episodes</h2>
 <p><small class="muted">Grouped by source, exactly as the pipeline groups them; skipped rows show what dedup/filtering/watermark removed. Click a source to expand. 👍/👎 stores feedback; ↻ regenerates with the latest pipeline.</small></p>
 {% for slug, g in groups.items() %}

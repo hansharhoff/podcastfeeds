@@ -22,6 +22,7 @@ from .extract import (
     extract_segments,
     fetch_html,
     fetch_image_jpeg,
+    fetch_pdf_text,
     image_area,
     is_paywalled,
     mark_dialogue,
@@ -698,8 +699,11 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         source_text = ep.source_text
 
     try:
-        # PDFs (e.g. a research-proof link) don't narrate into a useful episode.
-        if link and urlparse(link).path.lower().endswith(".pdf"):
+        is_pdf = bool(link) and urlparse(link).path.lower().endswith(".pdf")
+        # PDFs from feeds (e.g. a research-proof link) don't narrate into a
+        # useful episode — only queue-approved items (allow_pdf) take the
+        # extraction path.
+        if is_pdf and not source.allow_pdf:
             log.info("skipping PDF link (not narratable): %s", link)
             with db.session() as s:
                 ep = s.get(Episode, ep_id)
@@ -716,7 +720,11 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         html_text = ""
         paywalled = False
         fetch_issue = False
-        sref = substack_ref(source, link) if link else None
+        if is_pdf:
+            body = await fetch_pdf_text(link)
+            sref = None
+        else:
+            sref = substack_ref(source, link) if link else None
         if sref:
             # Substack: use the post API (cookie-safe, definitive audience).
             post = await fetch_post(*sref)
@@ -751,7 +759,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     " DESPITE subscriber cookie — session may be expired"
                     if fetch_issue else "", link)
             # post is None -> fall through to the generic HTML fetch below
-        if not sref or (not html_text and not paywalled):
+        if not is_pdf and (not sref or (not html_text and not paywalled)):
             if link:
                 fetch_url = _substack_fetch_url(source, link)
                 try:

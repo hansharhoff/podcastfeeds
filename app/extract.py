@@ -109,6 +109,29 @@ async def _fetch_via_proxy(url: str) -> str:
         return resp.text
 
 
+def pdf_text(data: bytes) -> str:
+    """Text content of a PDF, pages joined by blank lines. v1 of the queue's
+    PDF path is text-only (spec §3) — figures/layout are not preserved."""
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+
+
+async def fetch_pdf_text(url: str) -> str:
+    """Download a PDF and extract its text (queue-approved PDFs only — the
+    RSS-side skip in ingest.process_episode stays)."""
+    if _blocked_target(url):
+        raise RuntimeError(f"refusing to fetch non-public address: {url}")
+    headers = {"User-Agent": UA}
+    async with httpx.AsyncClient(
+        timeout=120, follow_redirects=True, headers=headers
+    ) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return pdf_text(resp.content)
+
+
 def extract_article(html_text: str, url: str = "") -> tuple[str, str]:
     """Returns (title, body_text)."""
     meta = trafilatura.extract_metadata(html_text, default_url=url or None)

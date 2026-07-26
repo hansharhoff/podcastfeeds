@@ -50,6 +50,31 @@ def _source_for(config, ep: Episode) -> SourceDef:
     )
 
 
+def _ticktick_queue_rows(items: list, episodes: dict) -> list[dict]:
+    """Build the admin-queue rows shown for TickTick items: still-queued items,
+    plus generated ones whose episode failed to produce anything listenable
+    (spec §5: "failed generates stay visible").
+
+    A failed generate isn't only Episode.status == "error": the book-brief path
+    can hand process_episode an honest "I'm not familiar with this book" brief,
+    which trips the RSS incident-32 looks_meta() guard (len(body) < 200 ->
+    filtered as meta-commentary) and the episode lands as status "skipped" with
+    no error text of its own — same dead end as a submit_url() call that hits a
+    pre-existing "skipped" episode for an article. Either way there's no error
+    and no episode worth surfacing outside the queue, so "skipped" must count
+    as failed here too, or the item vanishes with no trace (episodes list only
+    shows it, and it isn't "ready").
+    """
+    rows = []
+    for it in items:
+        ep = episodes.get(it.episode_id)
+        failed = ep is not None and ep.status in ("error", "skipped")
+        if it.status == "generated" and not failed:
+            continue  # healthy episode — it lives in the episode list now
+        rows.append({"item": it, "error": (ep.error if failed else it.last_error)})
+    return rows
+
+
 def _requeue(episode_id: int, digest_error: str | None = None) -> None:
     """Reset an episode to 'pending' and kick off processing with the current
     pipeline. Raises 404 if missing, 400 if it's a digest and digest_error given."""
@@ -137,14 +162,27 @@ async def index(request: Request, token: str):
             for s in config.sources if s.type in ("rss", "breaking", "inbox")
         ],
     }
+    # TickTick queue: queued items, plus generated ones whose episode failed
+    # (error OR skipped — see _ticktick_queue_rows) stay visible, error inline.
+    from .db import TickTickItem
     from .health import LAST as paid_health
     from .health import stuck_episodes
+    with db.session() as s:
+        q_rows = s.exec(
+            select(TickTickItem)
+            .where(TickTickItem.status != "dismissed")
+            .order_by(TickTickItem.task_created.desc())  # type: ignore[union-attr]
+        ).all()
+        q_eps = {r.episode_id: s.get(Episode, r.episode_id)
+                 for r in q_rows if r.episode_id}
+    queue = _ticktick_queue_rows(q_rows, q_eps)
 
     return templates.TemplateResponse(request, "index.html", {
         "groups": groups, "decisions": decisions, "feeds": feeds,
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
         "el": el, "paid_health": paid_health, "stuck": stuck_episodes(),
+        "queue": queue,
     })
 
 
@@ -179,6 +217,36 @@ async def api_dismiss(token: str, episode_id: int):
             raise HTTPException(status_code=404)
         ep.feedback = f"accepted-as-is\n{ep.feedback}".strip()
         s.add(ep)
+        s.commit()
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/ticktick/generate/{item_id}")
+async def api_ticktick_generate(token: str, item_id: int, request: Request):
+    """Generate the episode for a queued TickTick item (the click is the
+    approval; mode applies to PDFs: summary|full)."""
+    _check(token)
+    form = await request.form()
+    mode = (form.get("mode") or "summary").strip()
+    from .ticktick import generate_item
+    try:
+        ep_id = await generate_item(item_id, mode=mode)
+    except ValueError:
+        raise HTTPException(status_code=404) from None
+    log.info("ticktick queue: item %s -> episode %s (mode=%s)", item_id, ep_id, mode)
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/ticktick/dismiss/{item_id}")
+async def api_ticktick_dismiss(token: str, item_id: int):
+    _check(token)
+    from .db import TickTickItem
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        if not item:
+            raise HTTPException(status_code=404)
+        item.status = "dismissed"
+        s.add(item)
         s.commit()
     return RedirectResponse(url=f"/{token}/", status_code=303)
 

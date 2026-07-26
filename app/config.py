@@ -61,6 +61,7 @@ class SourceDef:
     title_filter: str = ""  # regex; rss entries whose title doesn't match are skipped
     llm_filter: str = ""  # criteria prose; entries are LLM-classified, non-matches skipped
     narrate_mode: str = "full"  # full: read the article | summary: LLM overview + show notes
+    allow_pdf: bool = False  # queue-approved PDFs only; RSS PDFs stay skipped
     danish_perspective: bool = False  # append an Opus-written "view from Denmark" segment
     keep_available: int = 10  # record the latest N posts as skipped rows (browsable/unskippable)
     el_voice: str = ""  # ElevenLabs voice_id for this source's main voice (when EL enabled)

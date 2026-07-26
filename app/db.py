@@ -37,6 +37,24 @@ class Episode(SQLModel, table=True):
     published_at: datetime | None = None
 
 
+class TickTickItem(SQLModel, table=True):
+    """A task seen on a watched TickTick list, awaiting Hans' generate/dismiss
+    call in the admin queue. task_id is the dedup key — it replaces the old
+    watermark, so the pre-existing backlog imports on the first poll."""
+    id: int | None = Field(default=None, primary_key=True)
+    task_id: str = Field(index=True, unique=True)  # TickTick task id
+    project: str = ""  # list name, e.g. "Z Reading"
+    title: str = ""
+    notes: str = ""  # task content + desc, concatenated
+    url: str = ""  # first URL found in title/notes; "" for book references
+    kind: str = "article"  # article|pdf|book (heuristic)
+    task_created: datetime | None = None  # TickTick createdTime
+    first_seen: datetime = Field(default_factory=utcnow)
+    status: str = Field(default="queued", index=True)  # queued|generated|dismissed
+    episode_id: int | None = None  # set once generated
+    last_error: str = ""  # last generate failure, shown inline in the queue
+
+
 class KV(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: str = ""

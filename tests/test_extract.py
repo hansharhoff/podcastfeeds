@@ -172,3 +172,52 @@ def test_segments_from_clean_html_flat_list_unchanged():
     html = "<ul><li>alpha one</li><li>beta two</li></ul>"
     _, segments = segments_from_clean_html(html)
     assert [s["text"] for s in segments] == ["alpha one", "beta two"]
+
+
+def _mini_pdf(text: str) -> bytes:
+    """A minimal valid one-page PDF containing `text` (ASCII only)."""
+    stream = f"BT /F1 12 Tf 72 712 Td ({text}) Tj ET".encode()
+    bodies = [
+        b"<</Type/Catalog/Pages 2 0 R>>",
+        b"<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        b"<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R"
+        b"/Resources<</Font<</F1 5 0 R>>>>>>",
+        b"<</Length %d>>\nstream\n%s\nendstream" % (len(stream), stream),
+        b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(bodies, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (i, body)
+    xref_at = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(bodies) + 1)
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF" % (
+        len(bodies) + 1, xref_at)
+    return bytes(out)
+
+
+def test_pdf_text_extracts_page_text():
+    from app.extract import pdf_text
+
+    text = pdf_text(_mini_pdf("Attention is all you need."))
+    assert "Attention is all you need." in text
+
+
+def _run_async(coro):
+    """Run an async coroutine the same way as test_health.py does."""
+    import asyncio
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def test_fetch_pdf_text_blocks_non_public_addresses():
+    import pytest
+
+    from app.extract import fetch_pdf_text
+
+    # Verify that fetch_pdf_text refuses to fetch from private addresses
+    # before making any network request (SSRF guard).
+    with pytest.raises(RuntimeError, match="refusing to fetch non-public address"):
+        _run_async(fetch_pdf_text("http://127.0.0.1:8000/document.pdf"))
