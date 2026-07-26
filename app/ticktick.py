@@ -1,5 +1,6 @@
-"""TickTick intake: URLs added to a designated TickTick list become inbox
-episodes, and the tasks are marked complete.
+"""TickTick intake: tasks on watched TickTick lists are upserted into the
+admin approval queue (TickTickItem) for Hans to review and generate/dismiss
+by hand — the poller itself never generates episodes or writes to TickTick.
 
 Requires data/ticktick.json written by scripts/ticktick_auth.py:
   {"access_token": "...", "list": "Podcast"}
@@ -16,7 +17,6 @@ from urllib.parse import urlparse
 import httpx
 
 from .config import DATA_DIR
-from .ingest import submit_url
 
 
 def _parse_dt(value: str) -> datetime | None:
@@ -74,15 +74,19 @@ def _load() -> dict | None:
 
 
 async def poll_ticktick() -> int:
-    """Returns number of URLs submitted."""
+    """Upsert open tasks from the watched lists into the admin approval queue.
+    Read-only: never completes tasks, never generates episodes (spec:
+    docs/superpowers/specs/2026-07-25-ticktick-phase2-design.md). Returns the
+    number of newly queued items."""
     conf = _load()
     if not conf or not conf.get("access_token"):
         return 0
-    # Accept a single "list" or several "lists".
     wanted = conf.get("lists") or [conf.get("list") or "Podcast"]
     wanted_lc = {str(n).lower() for n in wanted}
     headers = {"Authorization": f"Bearer {conf['access_token']}"}
-    submitted = 0
+    new_items = 0
+    open_ids: set[str] = set()
+    all_lists_ok = True
     try:
         async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             resp = await client.get(f"{API}/project")
@@ -94,43 +98,62 @@ async def poll_ticktick() -> int:
             if not projects:
                 log.warning("ticktick: none of the lists %r found", wanted)
                 return 0
-            # Watermark: never process the pre-existing backlog. First poll seeds
-            # the watermark to "now"; only tasks created afterwards are queued.
             from . import db
             with db.session() as s:
-                wm_iso = db.kv_get(s, "ticktick_watermark")
-            if not wm_iso:
-                with db.session() as s:
-                    db.kv_set(s, "ticktick_watermark",
-                              datetime.now(UTC).isoformat())
-                log.info("ticktick: seeded watermark; backlog left untouched")
-                return 0
-            watermark = _parse_dt(wm_iso)
-            newest = watermark
-            for project in projects:
-                data = (await client.get(f"{API}/project/{project['id']}/data")).json()
-                for task in data.get("tasks", []) or []:
-                    if task.get("status"):  # already completed
+                for project in projects:
+                    resp = await client.get(f"{API}/project/{project['id']}/data")
+                    if resp.status_code != 200:
+                        all_lists_ok = False
                         continue
-                    created = _parse_dt(task.get("createdTime") or "")
-                    if created is None or created <= watermark:  # backlog / already-seen
-                        continue
-                    if created > newest:
-                        newest = created
-                    text = f"{task.get('title', '')} {task.get('content', '')} {task.get('desc', '')}"
-                    match = URL_RE.search(text)
-                    if not match:
-                        continue
-                    url = match.group(0).rstrip(").,]")
-                    await submit_url(url)
-                    await client.post(
-                        f"{API}/project/{project['id']}/task/{task['id']}/complete"
-                    )
-                    submitted += 1
-                    log.info("ticktick: queued %s (from %s)", url, project.get("name"))
-            if newest > watermark:
-                with db.session() as s:
-                    db.kv_set(s, "ticktick_watermark", newest.isoformat())
+                    for task in resp.json().get("tasks") or []:
+                        if task.get("status"):  # completed in TickTick
+                            continue
+                        open_ids.add(task["id"])
+                        new_items += _upsert(s, project.get("name", ""), task)
+                # Only a poll that saw every watched list may conclude a queued
+                # item's task is gone — an API blip must not wipe the queue.
+                if all_lists_ok:
+                    _auto_dismiss(s, open_ids)
     except Exception:
         log.exception("ticktick poll failed")
-    return submitted
+    return new_items
+
+
+def _upsert(s, project_name: str, task: dict) -> int:
+    """Queue an unseen open task; task_id dedup makes re-polls no-ops.
+    Returns 1 if a new item was queued."""
+    from sqlmodel import select
+
+    from .db import TickTickItem
+
+    task_id = task["id"]
+    if s.exec(select(TickTickItem).where(TickTickItem.task_id == task_id)).first():
+        return 0
+    title = (task.get("title") or "").strip()
+    notes = " ".join(p for p in (task.get("content"), task.get("desc")) if p).strip()
+    match = URL_RE.search(f"{title} {notes}")
+    url = match.group(0).rstrip(").,]") if match else ""
+    item = TickTickItem(
+        task_id=task_id, project=project_name, title=title or url or "Untitled",
+        notes=notes, url=url, kind=detect_kind(url),
+        task_created=_parse_dt(task.get("createdTime") or ""),
+    )
+    s.add(item)
+    s.commit()
+    log.info("ticktick: queued [%s] %s (from %s)", item.kind, item.title[:60], project_name)
+    return 1
+
+
+def _auto_dismiss(s, open_ids: set[str]) -> None:
+    """Hans completed/deleted a still-queued task in TickTick — mirror that
+    here so the queue can be cleaned from either side."""
+    from sqlmodel import select
+
+    from .db import TickTickItem
+
+    for item in s.exec(select(TickTickItem).where(TickTickItem.status == "queued")).all():
+        if item.task_id not in open_ids:
+            item.status = "dismissed"
+            s.add(item)
+            log.info("ticktick: auto-dismissed %s (task gone from TickTick)", item.title[:60])
+    s.commit()
