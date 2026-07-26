@@ -50,6 +50,31 @@ def _source_for(config, ep: Episode) -> SourceDef:
     )
 
 
+def _ticktick_queue_rows(items: list, episodes: dict) -> list[dict]:
+    """Build the admin-queue rows shown for TickTick items: still-queued items,
+    plus generated ones whose episode failed to produce anything listenable
+    (spec §5: "failed generates stay visible").
+
+    A failed generate isn't only Episode.status == "error": the book-brief path
+    can hand process_episode an honest "I'm not familiar with this book" brief,
+    which trips the RSS incident-32 looks_meta() guard (len(body) < 200 ->
+    filtered as meta-commentary) and the episode lands as status "skipped" with
+    no error text of its own — same dead end as a submit_url() call that hits a
+    pre-existing "skipped" episode for an article. Either way there's no error
+    and no episode worth surfacing outside the queue, so "skipped" must count
+    as failed here too, or the item vanishes with no trace (episodes list only
+    shows it, and it isn't "ready").
+    """
+    rows = []
+    for it in items:
+        ep = episodes.get(it.episode_id)
+        failed = ep is not None and ep.status in ("error", "skipped")
+        if it.status == "generated" and not failed:
+            continue  # healthy episode — it lives in the episode list now
+        rows.append({"item": it, "error": (ep.error if failed else it.last_error)})
+    return rows
+
+
 def _requeue(episode_id: int, digest_error: str | None = None) -> None:
     """Reset an episode to 'pending' and kick off processing with the current
     pipeline. Raises 404 if missing, 400 if it's a digest and digest_error given."""
@@ -137,8 +162,8 @@ async def index(request: Request, token: str):
             for s in config.sources if s.type in ("rss", "breaking", "inbox")
         ],
     }
-    # TickTick queue: queued items, plus generated ones whose episode errored
-    # (those stay visible with the error inline — spec §5).
+    # TickTick queue: queued items, plus generated ones whose episode failed
+    # (error OR skipped — see _ticktick_queue_rows) stay visible, error inline.
     from .db import TickTickItem
     from .health import LAST as paid_health
     from .health import stuck_episodes
@@ -150,14 +175,7 @@ async def index(request: Request, token: str):
         ).all()
         q_eps = {r.episode_id: s.get(Episode, r.episode_id)
                  for r in q_rows if r.episode_id}
-    queue = []
-    for it in q_rows:
-        ep = q_eps.get(it.episode_id)
-        if it.status == "generated" and not (ep and ep.status == "error"):
-            continue  # healthy episode — it lives in the episode list now
-        queue.append({"item": it,
-                      "error": (ep.error if ep and ep.status == "error"
-                                else it.last_error)})
+    queue = _ticktick_queue_rows(q_rows, q_eps)
 
     return templates.TemplateResponse(request, "index.html", {
         "groups": groups, "decisions": decisions, "feeds": feeds,

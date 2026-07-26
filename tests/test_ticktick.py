@@ -8,7 +8,7 @@ from sqlmodel import select
 
 from app import db, ticktick
 from app.config import SourceDef, load_config
-from app.db import TickTickItem
+from app.db import Episode, TickTickItem
 from app.ticktick import detect_kind, pdf_url
 
 
@@ -186,6 +186,42 @@ def test_gone_task_auto_dismissed_only_on_clean_poll(monkeypatch):
     _run(ticktick.poll_ticktick())
     with db.session() as s:
         assert s.exec(select(TickTickItem)).first().status == "dismissed"
+
+
+def test_missing_watched_list_skips_auto_dismiss(monkeypatch):
+    """Two watched lists configured; a poll where one has vanished from the
+    /project listing entirely (renamed/archived, or a partial 200) must not
+    auto-dismiss anything — not even tasks from the list that's still present
+    (spec §1: auto-dismiss only runs when EVERY watched list was fetched)."""
+    ticktick.TOKENS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ticktick.TOKENS_FILE.write_text(json.dumps(
+        {"access_token": "tok", "lists": ["Z Reading", "Y Papers"]}
+    ))
+    _clear_queue()
+    projects = [{"id": "p1", "name": "Z Reading"}, {"id": "p2", "name": "Y Papers"}]
+    t1 = {"id": "t1", "title": "https://example.com/a", "status": 0,
+          "createdTime": "2026-07-20T10:00:00.000+0000"}
+    t2 = {"id": "t2", "title": "https://example.com/b", "status": 0,
+          "createdTime": "2026-07-20T10:00:00.000+0000"}
+    monkeypatch.setattr(ticktick.httpx, "AsyncClient",
+                        _FakeClient(projects, {"p1": [t1], "p2": [t2]}))
+    _run(ticktick.poll_ticktick())
+    with db.session() as s:
+        rows = {r.task_id: r for r in s.exec(select(TickTickItem)).all()}
+    assert rows["t1"].status == "queued" and rows["t2"].status == "queued"
+
+    # Y Papers disappears from /project (only Z Reading is returned this time),
+    # and t1 (still in Z Reading) is also gone from that list's tasks. Because
+    # a watched list is missing, all_lists_ok must be False: neither t1's nor
+    # t2's absence from open_ids may be trusted, so both must stay queued.
+    projects_missing = [{"id": "p1", "name": "Z Reading"}]
+    monkeypatch.setattr(ticktick.httpx, "AsyncClient",
+                        _FakeClient(projects_missing, {"p1": []}))
+    _run(ticktick.poll_ticktick())
+    with db.session() as s:
+        rows = {r.task_id: r for r in s.exec(select(TickTickItem)).all()}
+    assert rows["t1"].status == "queued"  # would be wrongly auto-dismissed pre-fix
+    assert rows["t2"].status == "queued"  # from the vanished list — must survive
 
 
 # ── process_episode: PDF narration path behind SourceDef.allow_pdf ─────────
@@ -380,3 +416,60 @@ def test_generate_article_failure_requeues_item(monkeypatch):
         item = s.get(TickTickItem, item_id)
     assert item.status == "queued"
     assert "boom" in item.last_error
+
+
+# ── _ticktick_queue_rows: admin-queue row building (app/web.py) ────────────
+#    Pure-helper extraction so the "generated but the episode secretly failed"
+#    seam is testable without HTTP (spec §5: failed generates stay visible).
+
+def test_queue_rows_surfaces_skipped_episode_not_just_error():
+    """A book brief for an unknown book can produce an honest, short "I'm not
+    confident I know this book" reply. That trips the RSS incident-32
+    looks_meta() guard in app/ingest.py (len(body) < 200 -> source_text
+    filtered out as meta-commentary), so the episode lands as status
+    'skipped' with no error of its own — not 'error'. Pre-fix, the queue view
+    only resurfaced status == 'error', so a 'generated' item whose episode is
+    merely 'skipped' vanished from the queue with no episode and no trace."""
+    from app.web import _ticktick_queue_rows
+
+    item = TickTickItem(task_id="t-skip-1", project="Z Reading", title="Some Book",
+                        kind="book", status="generated", episode_id=7,
+                        last_error="")
+    ep = Episode(id=7, source_slug="inbox", guid="ticktick:t-skip-1",
+                title="Some Book", status="skipped",
+                error="no article content (discussion/thread or link-only post)")
+    rows = _ticktick_queue_rows([item], {7: ep})
+    assert len(rows) == 1
+    assert rows[0]["item"] is item
+    assert rows[0]["error"] == ep.error
+
+
+def test_queue_rows_still_surfaces_error_episode():
+    from app.web import _ticktick_queue_rows
+
+    item = TickTickItem(task_id="t-err-1", project="Z Reading", title="A post",
+                        kind="article", status="generated", episode_id=8,
+                        last_error="")
+    ep = Episode(id=8, source_slug="inbox", guid="https://example.com/x",
+                title="A post", status="error", error="fetch failed")
+    rows = _ticktick_queue_rows([item], {8: ep})
+    assert len(rows) == 1 and rows[0]["error"] == "fetch failed"
+
+
+def test_queue_rows_hides_generated_item_with_healthy_episode():
+    from app.web import _ticktick_queue_rows
+
+    item = TickTickItem(task_id="t-ok-1", project="Z Reading", title="A post",
+                        kind="article", status="generated", episode_id=9)
+    ep = Episode(id=9, source_slug="inbox", guid="https://example.com/y",
+                title="A post", status="ready")
+    assert _ticktick_queue_rows([item], {9: ep}) == []
+
+
+def test_queue_rows_keeps_still_queued_item():
+    from app.web import _ticktick_queue_rows
+
+    item = TickTickItem(task_id="t-q-1", project="Z Reading", title="A post",
+                        kind="article", status="queued", last_error="boom")
+    rows = _ticktick_queue_rows([item], {})
+    assert len(rows) == 1 and rows[0]["error"] == "boom"

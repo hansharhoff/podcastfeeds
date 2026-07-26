@@ -102,6 +102,18 @@ async def poll_ticktick() -> int:
             if not projects:
                 log.warning("ticktick: none of the lists %r found", wanted)
                 return 0
+            matched_lc = {p.get("name", "").lower() for p in projects}
+            if len(matched_lc) < len(wanted_lc):
+                # A watched list vanished from the /project listing entirely
+                # (renamed/archived, or a partial 200 response) — that list's
+                # tasks are absent from open_ids for a reason that has nothing
+                # to do with Hans completing them, so this poll must not be
+                # allowed to auto-dismiss anything (spec §1).
+                all_lists_ok = False
+                log.warning(
+                    "ticktick: only %d/%d watched lists found in /project (%r) — "
+                    "skipping auto-dismiss this poll", len(matched_lc), len(wanted_lc), wanted,
+                )
             from . import db
             with db.session() as s:
                 for project in projects:
