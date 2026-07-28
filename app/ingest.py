@@ -24,9 +24,14 @@ from .extract import (
     fetch_image_jpeg,
     fetch_pdf_text,
     image_area,
+    is_link_forwarding_post,
     is_paywalled,
+    is_short_link,
+    looks_like_boilerplate,
     mark_dialogue,
     mark_qa,
+    outbound_link,
+    resolve_short_link,
     segments_from_clean_html,
     strip_html,
 )
@@ -720,6 +725,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         html_text = ""
         paywalled = False
         fetch_issue = False
+        followed_link = ""  # set below if a social post's outbound link was followed
+        link_source = ""    # the social post `followed_link` came from
+        link_follow = ""    # outcome string for provenance, set only for link-forwarding posts
         if is_pdf:
             body = await fetch_pdf_text(link)
             sref = None
@@ -769,6 +777,54 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     og_image = extract_og_image(html_text, fetch_url)
                     if not title or title == "Untitled":
                         title = extracted_title or title
+                    # Link-forwarding social post (X/Bluesky/Mastodon/Threads):
+                    # the post is a pointer, not the payload — follow it to the
+                    # article it links to (ep. 253 feedback). Keep the post's
+                    # own extraction above as the fallback for every skip path
+                    # below — that fallback is today's floor, never a hard
+                    # error. `link_follow` records which path was taken, for
+                    # provenance, even when nothing was followed.
+                    if is_link_forwarding_post(fetch_url):
+                        target = outbound_link(html_text, fetch_url)
+                        if not target:
+                            link_follow = "skipped: no outbound link found"
+                        else:
+                            if is_short_link(target):
+                                # Resolve BEFORE the same-platform check: a
+                                # t.co link on X typically resolves right back
+                                # to an x.com-native article (ep. 253
+                                # live-test), and catching that here avoids a
+                                # pointless fetch of a page we'd reject anyway.
+                                target = await resolve_short_link(target)
+                            if is_link_forwarding_post(target):
+                                link_follow = "skipped: same-platform article"
+                            else:
+                                try:
+                                    target_html = await fetch_html(target)
+                                    target_title, target_segs = extract_segments(target_html, target)
+                                    _, target_body = extract_article(target_html, target)
+                                except Exception as exc:
+                                    log.warning("outbound link fetch failed for %s -> %s: %s",
+                                                fetch_url, target, exc)
+                                    link_follow = "skipped: fetch failed"
+                                else:
+                                    if looks_like_boilerplate(target_body):
+                                        link_follow = "skipped: js-shell"
+                                    elif len(target_body) <= len(body):
+                                        # Must be a real improvement over what
+                                        # we already have — a shorter-or-equal
+                                        # target never replaces the post's own
+                                        # extraction (ep. 253 live-test: a
+                                        # JS-shell page can clear a bare
+                                        # length floor but not this one).
+                                        link_follow = "skipped: not longer than post"
+                                    else:
+                                        html_text, segments, body = target_html, target_segs, target_body
+                                        og_image = extract_og_image(target_html, target) or og_image
+                                        title = target_title or title
+                                        link_source, link = fetch_url, target
+                                        followed_link = target
+                                        link_follow = "followed"
                 except Exception as exc:
                     log.warning("fetch/extract failed for %s: %s", fetch_url, exc)
             paywalled = bool(link) and is_paywalled(body, html_text)
@@ -880,6 +936,16 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             "link": link, "language": language,
             "generated_at": utcnow().isoformat(),
         }
+        if link_follow:
+            # Set for every link-forwarding post (X/Bluesky/Mastodon/Threads),
+            # whether or not a link was actually followed, so the admin UI
+            # shows why (e.g. "skipped: same-platform article").
+            prov["link_follow"] = link_follow
+        if followed_link:
+            # `link` above is already the followed article; keep the original
+            # social post visible too, so the admin UI shows what happened.
+            prov["followed_link"] = followed_link
+            prov["link_source"] = link_source
         spoken_blocks: list[dict] = []
 
         if source.narrate_mode == "summary" and len(body) < 400:
