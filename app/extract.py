@@ -54,6 +54,160 @@ def _blocked_target(url: str) -> bool:
     return False
 
 
+# Social platforms whose post pages are typically a pointer, not the payload
+# (ep. 253 feedback: a tweet pointing at an essay got narrated as the tweet's
+# own short excerpt instead of the essay). Mastodon is federated — any domain
+# can run an instance — so only the flagship instance is listed; self-hosted
+# instances aren't recognized by host alone and fall back to today's behavior.
+LINK_FORWARDING_HOSTS = {
+    "x.com", "twitter.com", "mobile.twitter.com",
+    "bsky.app",
+    "threads.net", "www.threads.net",
+    "mastodon.social",
+}
+
+# Asset/CDN hosts that show up as <a href> targets on these platforms (image
+# links, not article links) — skipped the same way as another platform post.
+_JUNK_LINK_HOST_SUFFIXES = ("twimg.com",)
+
+_SKIP_LINK_HOST_SUFFIXES = tuple(LINK_FORWARDING_HOSTS) + _JUNK_LINK_HOST_SUFFIXES
+
+
+def is_link_forwarding_post(url: str) -> bool:
+    """True if `url` is a post page on a known link-forwarding social
+    platform — a candidate for `outbound_link` rather than direct narration."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in LINK_FORWARDING_HOSTS)
+
+
+# X (and likely other JS-app-shell platforms) doesn't put the outbound link
+# in an <a href> at all — live-test against the actual ep. 253 post
+# (2076957440109625718) found its 40 anchors are all x.com/twitter.com nav,
+# while the real link appears only as the (identical, repeated) content of
+# these meta tags and inside embedded JSON. Regex, not lxml: attribute order
+# in the wild isn't reliable enough to hardcode.
+_META_TAG_RE = re.compile(r"<meta\b[^>]*>", re.I)
+_META_ATTR_RE = re.compile(r'([\w:-]+)\s*=\s*"([^"]*)"')
+_META_LINK_NAMES = {"og:description", "twitter:description", "description"}
+
+# The raw t.co pattern also catches the link where it's embedded in the
+# page's inline JSON state — no meta tag needed for that one.
+_TCO_RE = re.compile(r"https://t\.co/\w+")
+
+
+def _meta_link_candidates(html_text: str) -> list[str]:
+    """og:description / twitter:description / name=description content,
+    when it's a bare URL — some platforms (X) render the post's own link
+    there instead of the post's text."""
+    out = []
+    for tag in _META_TAG_RE.findall(html_text):
+        attrs = dict(_META_ATTR_RE.findall(tag))
+        key = (attrs.get("property") or attrs.get("name") or "").lower()
+        content = attrs.get("content", "")
+        if key in _META_LINK_NAMES and content.startswith("http"):
+            out.append(html.unescape(content))
+    return out
+
+
+# Link-shorteners whose destination the poster actually wants read — a t.co
+# link is the raw candidate `outbound_link` returns for an X post. Only t.co
+# has direct evidence behind it; other shorteners aren't resolved (documented
+# gap, not a silent failure — they'll just be treated as a normal external
+# link and fetched as-is).
+_SHORT_LINK_HOSTS = {"t.co"}
+
+
+def is_short_link(url: str) -> bool:
+    """True if `url`'s host is a known link-shortener that must be resolved
+    to its real destination BEFORE the same-platform skip check runs (ep. 253
+    live-test: t.co resolves back to an x.com article, and skipping that has
+    to happen before we'd otherwise fetch it in full)."""
+    from urllib.parse import urlparse
+
+    return (urlparse(url).hostname or "").lower() in _SHORT_LINK_HOSTS
+
+
+async def resolve_short_link(url: str) -> str:
+    """Follow a short-link redirect to its real destination, reading only
+    response headers — never downloads the target body just to learn its
+    host. Returns `url` unchanged if resolution fails (the caller re-applies
+    its skip/fetch logic to whatever comes back, so an unresolved t.co simply
+    gets treated — and probably rejected — as an ordinary external link)."""
+    if _blocked_target(url):
+        return url
+    try:
+        async with httpx.AsyncClient(
+            follow_redirects=True, timeout=15, headers={"User-Agent": UA}
+        ) as client, client.stream("GET", url) as resp:
+            return str(resp.url)
+    except Exception:
+        return url
+
+
+_JS_SHELL_RE = re.compile(
+    r"javascript is disabled|enable javascript|something went wrong|supported browsers",
+    re.I,
+)
+
+
+def looks_like_boilerplate(text: str) -> bool:
+    """True when extracted text is app-shell/error boilerplate rather than
+    real content — e.g. an X-native long-form article renders nothing without
+    JS (ep. 253 live-test: fetching the resolved target came back "We've
+    detected that JavaScript is disabled in this browser..."). Checked before
+    letting a followed link replace the post's own extraction, since a short
+    boilerplate stub can otherwise slip past a bare length check."""
+    return bool(_JS_SHELL_RE.search(text[:2000]))
+
+
+def outbound_link(html_text: str, source_url: str) -> str:
+    """First plausible external article link on a fetched social-post page —
+    the thing the poster is actually pointing at. Checks, in order: <a href>
+    links, then og:description/twitter:description/description meta content,
+    then raw t.co occurrences anywhere in the page (X puts the link in the
+    latter two, not in an anchor — see `_meta_link_candidates`). Returns ""
+    if nothing plausible is found, so the caller can fall back to narrating
+    the post itself (never a hard error).
+
+    Skips: links back to the same host (other posts, profile, nav), other
+    known social-platform hosts (never chain from one post to another), and
+    that platform's own CDN. A short link (t.co) is returned as-is — the
+    caller resolves it (see `resolve_short_link`) before deciding whether to
+    fetch it in full.
+    """
+    from urllib.parse import urlparse
+
+    from lxml import html as lh
+
+    source_host = (urlparse(source_url).hostname or "").lower()
+
+    def plausible(href: str) -> str:
+        href = (href or "").strip()
+        if not href.startswith("http"):
+            return ""  # skip #anchors, mailto:, javascript:, relative nav links
+        host = (urlparse(href).hostname or "").lower()
+        if not host or host == source_host:
+            return ""  # link back to another post/page on the same platform
+        if any(host == h or host.endswith("." + h) for h in _SKIP_LINK_HOST_SUFFIXES):
+            return ""  # another social platform's post, or its CDN
+        return href
+
+    anchors = []
+    try:
+        root = lh.fromstring(html_text)
+        anchors = [a.get("href", "") for a in root.iter("a")]
+    except Exception:
+        pass  # unparsable markup — meta/regex candidates below still apply
+
+    for href in anchors + _meta_link_candidates(html_text) + _TCO_RE.findall(html_text):
+        candidate = plausible(href)
+        if candidate:
+            return candidate
+    return ""
+
+
 def _cookie_for(url: str) -> str:
     """Match the request host against configured cookie domains (suffix match),
     so paid publications are fetched as the logged-in subscriber. The most

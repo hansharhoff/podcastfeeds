@@ -1,8 +1,12 @@
 from app.extract import (
     detect_language,
+    is_link_forwarding_post,
     is_paywalled,
+    is_short_link,
+    looks_like_boilerplate,
     mark_dialogue,
     mark_qa,
+    outbound_link,
     strip_html,
 )
 
@@ -172,6 +176,115 @@ def test_segments_from_clean_html_flat_list_unchanged():
     html = "<ul><li>alpha one</li><li>beta two</li></ul>"
     _, segments = segments_from_clean_html(html)
     assert [s["text"] for s in segments] == ["alpha one", "beta two"]
+
+
+# ── link-forwarding social posts (X/Bluesky/Mastodon/Threads): the post is a
+#    pointer, not the payload — follow it to the article it links to (ep. 253
+#    feedback: Demis Hassabis's tweet pointing at his essay got narrated as a
+#    2439-char tweet-page excerpt instead of the essay). ──
+
+def test_is_link_forwarding_post_recognizes_known_hosts():
+    assert is_link_forwarding_post("https://x.com/demishassabis/status/1") is True
+    assert is_link_forwarding_post("https://twitter.com/user/status/1") is True
+    assert is_link_forwarding_post("https://mobile.twitter.com/user/status/1") is True
+    assert is_link_forwarding_post("https://bsky.app/profile/user.bsky.social/post/1") is True
+    assert is_link_forwarding_post("https://www.threads.net/@user/post/1") is True
+    assert is_link_forwarding_post("https://mastodon.social/@user/1") is True
+
+
+def test_is_link_forwarding_post_ignores_ordinary_sites():
+    assert is_link_forwarding_post("https://noahpinion.blog/p/some-post") is False
+    assert is_link_forwarding_post("https://deepmind.google/blog/a-framework") is False
+
+
+def test_outbound_link_finds_first_external_link_skipping_platform_and_cdn():
+    # Shape mirrors a real X post page: a self-link (profile), a CDN image
+    # (not an <a>, ignored anyway), a login nav link, then the actual outbound
+    # link the poster is pointing at.
+    html = (
+        '<html><body>'
+        '<a href="https://x.com/demishassabis">@demishassabis</a>'
+        '<p>Sharing our new framework for frontier AI.</p>'
+        '<a href="https://twitter.com/i/flow/login">Log in</a>'
+        '<a href="https://t.co/AbCdEfGhIj">deepmind.google/blog/a-framewo…</a>'
+        '</body></html>'
+    )
+    assert outbound_link(html, "https://x.com/demishassabis/status/1") == "https://t.co/AbCdEfGhIj"
+
+
+def test_outbound_link_skips_twimg_cdn_and_other_platform_hosts():
+    html = (
+        '<html><body>'
+        '<img src="https://pbs.twimg.com/profile_images/foo.jpg">'
+        '<a href="https://pbs.twimg.com/media/bar.jpg">image</a>'
+        '<a href="https://bsky.app/profile/other/post/2">another post</a>'
+        '<a href="https://example.com/article">the real article</a>'
+        '</body></html>'
+    )
+    assert outbound_link(html, "https://x.com/demishassabis/status/1") == "https://example.com/article"
+
+
+def test_outbound_link_returns_empty_when_nothing_plausible():
+    html = (
+        '<html><body>'
+        '<a href="https://x.com/demishassabis">profile</a>'
+        '<a href="#reply">reply</a>'
+        '<a href="mailto:someone@example.com">mail</a>'
+        '</body></html>'
+    )
+    assert outbound_link(html, "https://x.com/demishassabis/status/1") == ""
+
+
+def test_outbound_link_handles_unparsable_html():
+    assert outbound_link("<<<not html", "https://x.com/a/status/1") == ""
+
+
+# ── live-test findings (real fetch of the ep. 253 post, 2076957440109625718):
+#    X's 40 anchors are all x.com/twitter.com nav; the actual outbound link
+#    (a t.co short link) appears only in og:description-style meta content
+#    and in embedded JSON — never in an <a href>. ──
+
+def test_outbound_link_discovers_link_in_meta_description_only():
+    html = (
+        '<html><head>'
+        '<meta property="og:description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '<meta name="description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '<meta name="twitter:description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '</head><body>'
+        '<a href="https://x.com/demishassabis">profile</a>'
+        '<a href="https://twitter.com/i/flow/login">Log in</a>'
+        '</body></html>'
+    )
+    assert outbound_link(html, "https://x.com/demishassabis/status/1") == "https://t.co/PTeDiv1b6L"
+
+
+def test_outbound_link_discovers_raw_tco_with_no_meta_or_anchor():
+    html = '<html><body><script>state={"text":"https://t.co/AbC123xyz"}</script></body></html>'
+    assert outbound_link(html, "https://x.com/a/status/1") == "https://t.co/AbC123xyz"
+
+
+def test_is_short_link_recognizes_tco_only():
+    assert is_short_link("https://t.co/AbC123") is True
+    assert is_short_link("https://example.com/article") is False
+
+
+def test_looks_like_boilerplate_detects_js_shell_strings():
+    # Verbatim strings from the live target fetch (x.com/i/article/... behind
+    # a t.co redirect): a JS-only render, no JS -> boilerplate, not content.
+    assert looks_like_boilerplate(
+        "We've detected that JavaScript is disabled in this browser. Please "
+        "enable JavaScript or switch to a supported browser to continue."
+    ) is True
+    assert looks_like_boilerplate("A Framework for Frontier AI. " * 30) is False
+
+
+def test_resolve_short_link_blocks_non_public_targets_without_fetching():
+    from app.extract import resolve_short_link
+    # SSRF guard fires before any network attempt (loopback resolves purely
+    # locally, so this assertion stays offline) — resolution returns the
+    # original URL unchanged rather than fetching it.
+    blocked = "http://127.0.0.1:8000/evil"
+    assert _run_async(resolve_short_link(blocked)) == blocked
 
 
 def _mini_pdf(text: str) -> bytes:
