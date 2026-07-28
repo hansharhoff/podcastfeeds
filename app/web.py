@@ -71,7 +71,11 @@ def _ticktick_queue_rows(items: list, episodes: dict) -> list[dict]:
         failed = ep is not None and ep.status in ("error", "skipped")
         if it.status == "generated" and not failed:
             continue  # healthy episode — it lives in the episode list now
-        rows.append({"item": it, "error": (ep.error if failed else it.last_error)})
+        rows.append({
+            "item": it,
+            "error": (ep.error if failed else it.last_error),
+            "proposal": it.proposal,
+        })
     return rows
 
 
@@ -246,6 +250,23 @@ async def api_ticktick_dismiss(token: str, item_id: int):
         if not item:
             raise HTTPException(status_code=404)
         item.status = "dismissed"
+        s.add(item)
+        s.commit()
+    return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/ticktick/retag-article/{item_id}")
+async def api_ticktick_retag_article(token: str, item_id: int):
+    """Acting on a not-a-book proposal: flip kind to 'article' so Hans can
+    supply/confirm a URL and Generate. The proposal text stays until the next
+    generate attempt overwrites or clears it — it's still useful context."""
+    _check(token)
+    from .db import TickTickItem
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        if not item:
+            raise HTTPException(status_code=404)
+        item.kind = "article"
         s.add(item)
         s.commit()
     return RedirectResponse(url=f"/{token}/", status_code=303)
