@@ -53,6 +53,8 @@ class TickTickItem(SQLModel, table=True):
     status: str = Field(default="queued", index=True)  # queued|generated|dismissed
     episode_id: int | None = None  # set once generated
     last_error: str = ""  # last generate failure, shown inline in the queue
+    proposal: str = ""  # actionable suggestion when a generate produced a dud
+    # (e.g. book-brief verdict "not-a-book") rather than a plain exception
 
 
 class KV(SQLModel, table=True):
@@ -94,6 +96,9 @@ def _migrate(eng) -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_episode_source_guid "
             "ON episode (source_slug, guid)"
         ))
+        tt_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(ticktickitem)"))}
+        if "proposal" not in tt_cols:
+            conn.execute(text("ALTER TABLE ticktickitem ADD COLUMN proposal TEXT NOT NULL DEFAULT ''"))
         conn.commit()
 
 

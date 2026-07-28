@@ -20,6 +20,7 @@
   .row-actions form { display: inline; }
   .row-actions button { padding: .2rem .45rem; }
   small.muted { opacity: .65; }
+  small.proposal { color: #2e7dd3; }
   tr.skipped { opacity: .55; }
   h3 { margin: 1.4rem 0 .3rem; font-size: 1rem; }
   details { margin: .3rem 0; border-bottom: 1px solid #8883; }
@@ -155,6 +156,7 @@
       <small class="muted">{{ it.project }}{% if it.task_created %} · {{ it.task_created.strftime('%Y-%m-%d') }}{% endif %}</small>
       {% if it.notes %}<br><small class="muted">{{ it.notes|truncate(120) }}</small>{% endif %}
       {% if row.error %}<br><small class="muted">⚠ {{ row.error|truncate(160) }}</small>{% endif %}
+      {% if row.proposal %}<br><small class="proposal">💡 {{ row.proposal|truncate(200) }}</small>{% endif %}
     </td>
     <td class="row-actions">
       {% if it.kind == 'pdf' %}
@@ -164,6 +166,13 @@
       <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button>brief</button></form>
       {% else %}
       <form method="post" action="/{{ token }}/api/ticktick/generate/{{ it.id }}"><button>generate</button></form>
+      {% endif %}
+      {% if row.proposal and it.kind != 'article' %}
+        {% if it.url %}
+        <form method="post" action="/{{ token }}/api/ticktick/retag-article/{{ it.id }}"><button title="flip kind to article, then generate">retag as article</button></form>
+        {% else %}
+        <small class="muted" title="no URL on this item — retagging alone can't generate">no URL to retag with</small>
+        {% endif %}
       {% endif %}
       <form method="post" action="/{{ token }}/api/ticktick/dismiss/{{ it.id }}"><button>dismiss</button></form>
     </td>
