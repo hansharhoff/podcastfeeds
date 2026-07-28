@@ -2,6 +2,8 @@ from app.extract import (
     detect_language,
     is_link_forwarding_post,
     is_paywalled,
+    is_short_link,
+    looks_like_boilerplate,
     mark_dialogue,
     mark_qa,
     outbound_link,
@@ -235,6 +237,54 @@ def test_outbound_link_returns_empty_when_nothing_plausible():
 
 def test_outbound_link_handles_unparsable_html():
     assert outbound_link("<<<not html", "https://x.com/a/status/1") == ""
+
+
+# ── live-test findings (real fetch of the ep. 253 post, 2076957440109625718):
+#    X's 40 anchors are all x.com/twitter.com nav; the actual outbound link
+#    (a t.co short link) appears only in og:description-style meta content
+#    and in embedded JSON — never in an <a href>. ──
+
+def test_outbound_link_discovers_link_in_meta_description_only():
+    html = (
+        '<html><head>'
+        '<meta property="og:description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '<meta name="description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '<meta name="twitter:description" content="https://t.co/PTeDiv1b6L" nonce="x"/>'
+        '</head><body>'
+        '<a href="https://x.com/demishassabis">profile</a>'
+        '<a href="https://twitter.com/i/flow/login">Log in</a>'
+        '</body></html>'
+    )
+    assert outbound_link(html, "https://x.com/demishassabis/status/1") == "https://t.co/PTeDiv1b6L"
+
+
+def test_outbound_link_discovers_raw_tco_with_no_meta_or_anchor():
+    html = '<html><body><script>state={"text":"https://t.co/AbC123xyz"}</script></body></html>'
+    assert outbound_link(html, "https://x.com/a/status/1") == "https://t.co/AbC123xyz"
+
+
+def test_is_short_link_recognizes_tco_only():
+    assert is_short_link("https://t.co/AbC123") is True
+    assert is_short_link("https://example.com/article") is False
+
+
+def test_looks_like_boilerplate_detects_js_shell_strings():
+    # Verbatim strings from the live target fetch (x.com/i/article/... behind
+    # a t.co redirect): a JS-only render, no JS -> boilerplate, not content.
+    assert looks_like_boilerplate(
+        "We've detected that JavaScript is disabled in this browser. Please "
+        "enable JavaScript or switch to a supported browser to continue."
+    ) is True
+    assert looks_like_boilerplate("A Framework for Frontier AI. " * 30) is False
+
+
+def test_resolve_short_link_blocks_non_public_targets_without_fetching():
+    from app.extract import resolve_short_link
+    # SSRF guard fires before any network attempt (loopback resolves purely
+    # locally, so this assertion stays offline) — resolution returns the
+    # original URL unchanged rather than fetching it.
+    blocked = "http://127.0.0.1:8000/evil"
+    assert _run_async(resolve_short_link(blocked)) == blocked
 
 
 def _mini_pdf(text: str) -> bytes:
