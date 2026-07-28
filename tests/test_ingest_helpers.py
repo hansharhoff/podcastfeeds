@@ -188,6 +188,7 @@ def test_process_episode_follows_outbound_link_from_social_post(monkeypatch):
     assert prov["followed_link"] == article_url
     assert prov["link_source"] == post_url
     assert prov["link"] == article_url  # show notes point at the real article
+    assert prov["link_follow"] == "followed"
 
 
 def test_process_episode_falls_back_to_post_text_when_no_outbound_link(monkeypatch):
@@ -234,6 +235,7 @@ def test_process_episode_falls_back_to_post_text_when_no_outbound_link(monkeypat
     prov = json.loads(done.provenance)
     assert "followed_link" not in prov
     assert prov["link"] == post_url
+    assert prov["link_follow"] == "skipped: no outbound link found"
 
 
 def test_process_episode_falls_back_when_target_fetch_fails(monkeypatch):
@@ -286,3 +288,196 @@ def test_process_episode_falls_back_when_target_fetch_fails(monkeypatch):
     prov = json.loads(done.provenance)
     assert "followed_link" not in prov
     assert prov["link"] == post_url
+    assert prov["link_follow"] == "skipped: fetch failed"
+
+
+# ── live-test findings (real fetch of the ep. 253 post): the outbound link
+#    is a t.co short link that resolves BACK to an x.com-native article —
+#    must be skipped (same platform) before any full fetch, and a JS-shell
+#    body must never replace the post's own extraction even if it's longer
+#    than a bare length floor. ──
+
+def test_process_episode_skips_same_platform_after_resolving_short_link(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    post_url = "https://x.com/demishassabis/status/2076957440109625719"
+    short_link = "https://t.co/PTeDiv1b6L"
+    resolved_article_url = "https://x.com/i/article/2076946210397552640"
+    post_html = (
+        '<html><head>'
+        f'<meta property="og:description" content="{short_link}"/>'
+        '</head><body>'
+        '<a href="https://x.com/demishassabis">profile</a>'
+        "</body></html>"
+    )
+
+    async def fake_fetch_html(url):
+        if url == post_url:
+            return post_html
+        raise AssertionError(f"unexpected fetch: {url} — resolved same-platform "
+                              "target must never be fetched in full")
+
+    async def fake_resolve_short_link(url):
+        assert url == short_link
+        return resolved_article_url
+
+    def fake_extract_segments(html_text, url=""):
+        return "", []
+
+    def fake_extract_article(html_text, url=""):
+        assert url == post_url
+        return "", "The tweet's own text, padded past the extraction floor here. " * 4
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 333, 10
+
+    monkeypatch.setattr(ingest, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(ingest, "resolve_short_link", fake_resolve_short_link)
+    monkeypatch.setattr(ingest, "extract_segments", fake_extract_segments)
+    monkeypatch.setattr(ingest, "extract_article", fake_extract_article)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid=post_url, title="A tweet", link=post_url)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "ready"
+    prov = json.loads(done.provenance)
+    assert "followed_link" not in prov  # never followed — post extraction preserved
+    assert prov["link"] == post_url
+    assert prov["link_follow"] == "skipped: same-platform article"
+
+
+def test_process_episode_rejects_js_shell_target_even_though_longer(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    post_url = "https://x.com/demishassabis/status/1"
+    article_url = "https://x-native-article-mirror.example/2076946210397552640"
+    post_html = (
+        '<html><body><a href="https://x.com/demishassabis">profile</a>'
+        f'<a href="{article_url}">the article</a></body></html>'
+    )
+    # Verbatim boilerplate from the live target fetch (a JS-only render).
+    js_shell_body = ("We've detected that JavaScript is disabled in this "
+                      "browser. Please enable JavaScript or switch to a "
+                      "supported browser to continue using this site. " * 3)
+
+    async def fake_fetch_html(url):
+        if url == post_url:
+            return post_html
+        if url == article_url:
+            return "<html><body>js shell</body></html>"
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    def fake_extract_segments(html_text, url=""):
+        return "", []
+
+    # Well past the pipeline's own 40-char "no content" floor, but shorter
+    # than js_shell_body — so a bare length comparison alone would follow
+    # the link; only the boilerplate check catches it.
+    post_body = "Sharing our thinking on this, worth a read if you have time. " * 2
+
+    def fake_extract_article(html_text, url=""):
+        if url == post_url:
+            return "", post_body
+        if url == article_url:
+            return "A Framework for Frontier AI", js_shell_body  # > 200 chars, > post body
+        return "", ""
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 444, 10
+
+    monkeypatch.setattr(ingest, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(ingest, "extract_segments", fake_extract_segments)
+    monkeypatch.setattr(ingest, "extract_article", fake_extract_article)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid=post_url, title="A tweet", link=post_url)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "ready"
+    prov = json.loads(done.provenance)
+    assert "followed_link" not in prov  # boilerplate rejected despite being longer
+    assert prov["link"] == post_url
+    assert prov["link_follow"] == "skipped: js-shell"
+
+
+def test_process_episode_rejects_target_not_longer_than_post(monkeypatch):
+    """A followed target must be a real improvement — shorter-or-equal never
+    replaces the post's own extraction, even if both are substantial."""
+    from app import ingest
+    from app.db import Episode
+
+    post_url = "https://x.com/demishassabis/status/2"
+    article_url = "https://example.com/short-note"
+    post_html = (
+        '<html><body><a href="https://x.com/demishassabis">profile</a>'
+        f'<a href="{article_url}">a short note</a></body></html>'
+    )
+    post_body = "The post's own substantial text, well past any length floor. " * 4
+    target_body = "A shorter target page. " * 2  # real content, but not longer than post_body
+
+    async def fake_fetch_html(url):
+        if url == post_url:
+            return post_html
+        if url == article_url:
+            return "<html><body>short target</body></html>"
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    def fake_extract_segments(html_text, url=""):
+        return "", []
+
+    def fake_extract_article(html_text, url=""):
+        if url == post_url:
+            return "", post_body
+        if url == article_url:
+            return "A short note", target_body
+        return "", ""
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 555, 10
+
+    monkeypatch.setattr(ingest, "fetch_html", fake_fetch_html)
+    monkeypatch.setattr(ingest, "extract_segments", fake_extract_segments)
+    monkeypatch.setattr(ingest, "extract_article", fake_extract_article)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid=post_url, title="A tweet", link=post_url)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "ready"
+    prov = json.loads(done.provenance)
+    assert "followed_link" not in prov
+    assert prov["link"] == post_url
+    assert prov["link_follow"] == "skipped: not longer than post"
