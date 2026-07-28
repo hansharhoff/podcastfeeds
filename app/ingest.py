@@ -24,9 +24,11 @@ from .extract import (
     fetch_image_jpeg,
     fetch_pdf_text,
     image_area,
+    is_link_forwarding_post,
     is_paywalled,
     mark_dialogue,
     mark_qa,
+    outbound_link,
     segments_from_clean_html,
     strip_html,
 )
@@ -720,6 +722,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         html_text = ""
         paywalled = False
         fetch_issue = False
+        followed_link = ""  # set below if a social post's outbound link was followed
+        link_source = ""    # the social post `followed_link` came from
         if is_pdf:
             body = await fetch_pdf_text(link)
             sref = None
@@ -769,6 +773,28 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     og_image = extract_og_image(html_text, fetch_url)
                     if not title or title == "Untitled":
                         title = extracted_title or title
+                    # Link-forwarding social post (X/Bluesky/Mastodon/Threads):
+                    # the post is a pointer, not the payload — follow it to the
+                    # article it links to (ep. 253 feedback). Keep the post's
+                    # own extraction above as the fallback if there's no
+                    # outbound link or the target can't be fetched/extracted —
+                    # that fallback is today's floor, never a hard error.
+                    if is_link_forwarding_post(fetch_url):
+                        target = outbound_link(html_text, fetch_url)
+                        if target:
+                            try:
+                                target_html = await fetch_html(target)
+                                target_title, target_segs = extract_segments(target_html, target)
+                                _, target_body = extract_article(target_html, target)
+                                if len(target_body) >= 200:  # a real article, not another stub
+                                    html_text, segments, body = target_html, target_segs, target_body
+                                    og_image = extract_og_image(target_html, target) or og_image
+                                    title = target_title or title
+                                    link_source, link = fetch_url, target
+                                    followed_link = target
+                            except Exception as exc:
+                                log.warning("outbound link fetch failed for %s -> %s: %s",
+                                            fetch_url, target, exc)
                 except Exception as exc:
                     log.warning("fetch/extract failed for %s: %s", fetch_url, exc)
             paywalled = bool(link) and is_paywalled(body, html_text)
@@ -880,6 +906,11 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             "link": link, "language": language,
             "generated_at": utcnow().isoformat(),
         }
+        if followed_link:
+            # `link` above is already the followed article; keep the original
+            # social post visible too, so the admin UI shows what happened.
+            prov["followed_link"] = followed_link
+            prov["link_source"] = link_source
         spoken_blocks: list[dict] = []
 
         if source.narrate_mode == "summary" and len(body) < 400:

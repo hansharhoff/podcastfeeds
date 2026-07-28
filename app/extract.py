@@ -54,6 +54,67 @@ def _blocked_target(url: str) -> bool:
     return False
 
 
+# Social platforms whose post pages are typically a pointer, not the payload
+# (ep. 253 feedback: a tweet pointing at an essay got narrated as the tweet's
+# own short excerpt instead of the essay). Mastodon is federated — any domain
+# can run an instance — so only the flagship instance is listed; self-hosted
+# instances aren't recognized by host alone and fall back to today's behavior.
+LINK_FORWARDING_HOSTS = {
+    "x.com", "twitter.com", "mobile.twitter.com",
+    "bsky.app",
+    "threads.net", "www.threads.net",
+    "mastodon.social",
+}
+
+# Asset/CDN hosts that show up as <a href> targets on these platforms (image
+# links, not article links) — skipped the same way as another platform post.
+_JUNK_LINK_HOST_SUFFIXES = ("twimg.com",)
+
+_SKIP_LINK_HOST_SUFFIXES = tuple(LINK_FORWARDING_HOSTS) + _JUNK_LINK_HOST_SUFFIXES
+
+
+def is_link_forwarding_post(url: str) -> bool:
+    """True if `url` is a post page on a known link-forwarding social
+    platform — a candidate for `outbound_link` rather than direct narration."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in LINK_FORWARDING_HOSTS)
+
+
+def outbound_link(html_text: str, source_url: str) -> str:
+    """First plausible external article link on a fetched social-post page —
+    the thing the poster is actually pointing at. Returns "" if nothing
+    plausible is found, so the caller can fall back to narrating the post
+    itself (never a hard error).
+
+    Skips: links back to the same host (other posts, profile, nav), other
+    known social-platform hosts (never chain from one post to another), and
+    that platform's own CDN. A t.co (or similar) short link is returned
+    as-is — the later fetch follows redirects, landing on the real target.
+    """
+    from urllib.parse import urlparse
+
+    from lxml import html as lh
+
+    try:
+        root = lh.fromstring(html_text)
+    except Exception:
+        return ""
+    source_host = (urlparse(source_url).hostname or "").lower()
+    for a in root.iter("a"):
+        href = (a.get("href") or "").strip()
+        if not href.startswith("http"):
+            continue  # skip #anchors, mailto:, javascript:, relative nav links
+        host = (urlparse(href).hostname or "").lower()
+        if not host or host == source_host:
+            continue  # link back to another post/page on the same platform
+        if any(host == h or host.endswith("." + h) for h in _SKIP_LINK_HOST_SUFFIXES):
+            continue  # another social platform's post, or its CDN
+        return href
+    return ""
+
+
 def _cookie_for(url: str) -> str:
     """Match the request host against configured cookie domains (suffix match),
     so paid publications are fetched as the logged-in subscriber. The most
