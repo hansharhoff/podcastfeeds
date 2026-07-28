@@ -391,6 +391,89 @@ def test_book_brief_failure_requeues_item(monkeypatch):
     assert item.status == "queued" and "shim down" in item.last_error
 
 
+def test_book_brief_verdict_brief_strips_verdict_line(monkeypatch):
+    """A normal 'VERDICT: brief' reply still narrates — but the machine-
+    readable verdict line itself must never reach the listener."""
+    from app import ingest, summarize
+    from app.db import Episode
+
+    async def fake_llm(prompt, **kwargs):
+        assert "VERDICT" in prompt  # the new protocol is asked for
+        return "VERDICT: brief\nThis is a brief about a real book. ..."
+
+    processed = {}
+
+    async def fake_process_episode(ep_id, source):
+        processed["ep_id"] = ep_id
+
+    monkeypatch.setattr(summarize, "llm", fake_llm)
+    monkeypatch.setattr(ingest, "process_episode", fake_process_episode)
+    item_id = _queue_item(kind="book", title="A Real Book", task_id="t-book-verdict-1")
+    config = load_config()
+    inbox = next(s_ for s_ in config.sources if s_.type == "inbox")
+    ep_id = ticktick._create_episode(inbox.slug, "ticktick:t-book-verdict-1",
+                                     "A Real Book", "")
+    _run(ticktick._render_book_brief(ep_id, item_id, inbox, "A Real Book", ""))
+    with db.session() as s:
+        ep = s.get(Episode, ep_id)
+    assert "VERDICT" not in ep.source_text
+    assert "brief about a real book" in ep.source_text
+    assert processed["ep_id"] == ep_id
+
+
+def test_book_brief_not_a_book_verdict_creates_no_episode_and_proposes(monkeypatch):
+    """'arxiv sanity' / 'ffmpeg assembly instructions' bug: when the LLM says
+    honestly that a reading-list reference isn't a book, the pipeline must not
+    turn that demurral into a published dud episode. Instead: no episode, item
+    back to queued, and an actionable proposal in the queue."""
+    from app import ingest, summarize
+    from app.db import Episode
+
+    async def fake_llm(prompt, **kwargs):
+        return ("VERDICT: not-a-book — looks like a website/tool. Suggested: "
+                "retag as article and supply a URL.")
+
+    def boom(*a, **k):
+        raise AssertionError("process_episode must not run for a not-a-book verdict")
+
+    monkeypatch.setattr(summarize, "llm", fake_llm)
+    monkeypatch.setattr(ingest, "process_episode", boom)
+    item_id = _queue_item(kind="book", title="arxiv sanity", task_id="t-book-notabook-1")
+    config = load_config()
+    inbox = next(s_ for s_ in config.sources if s_.type == "inbox")
+    ep_id = ticktick._create_episode(inbox.slug, "ticktick:t-book-notabook-1",
+                                     "arxiv sanity", "")
+    _run(ticktick._render_book_brief(ep_id, item_id, inbox, "arxiv sanity", ""))
+    with db.session() as s:
+        ep = s.get(Episode, ep_id)
+        item = s.get(TickTickItem, item_id)
+    assert ep is None  # no episode left behind
+    assert item.status == "queued"
+    assert item.episode_id is None
+    assert item.last_error == ""
+    assert "website/tool" in item.proposal
+    assert "retag as article" in item.proposal
+
+
+def test_retag_article_route_flips_kind():
+    """The queue's 'retag as article' action for a not-a-book proposal: just
+    flips kind, so Hans can supply/confirm a URL and Generate next."""
+    from app.config import get_token
+    from app.web import api_ticktick_retag_article
+
+    item_id = _queue_item(kind="book", title="arxiv sanity", task_id="t-retag-1",
+                          status="queued")
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+        item.proposal = "Not a book — looks like a website/tool."
+        s.add(item)
+        s.commit()
+    _run(api_ticktick_retag_article(get_token(), item_id))
+    with db.session() as s:
+        item = s.get(TickTickItem, item_id)
+    assert item.kind == "article"
+
+
 def test_generate_dismissed_item_refused():
     item_id = _queue_item(kind="article", url="https://example.com/z",
                           status="dismissed", task_id="t-dis-1")
@@ -473,3 +556,19 @@ def test_queue_rows_keeps_still_queued_item():
                         kind="article", status="queued", last_error="boom")
     rows = _ticktick_queue_rows([item], {})
     assert len(rows) == 1 and rows[0]["error"] == "boom"
+
+
+def test_queue_rows_surfaces_proposal():
+    """A not-a-book verdict leaves the item queued with no error but a
+    proposal — the row builder must surface it so the admin page can render
+    it distinctly from a plain failure."""
+    from app.web import _ticktick_queue_rows
+
+    item = TickTickItem(task_id="t-prop-1", project="Z Reading", title="arxiv sanity",
+                        kind="book", status="queued", last_error="",
+                        proposal="Not a book — looks like a website/tool. "
+                                 "Suggested: retag as article and supply a URL.")
+    rows = _ticktick_queue_rows([item], {})
+    assert len(rows) == 1
+    assert rows[0]["error"] == ""
+    assert "retag as article" in rows[0]["proposal"]
