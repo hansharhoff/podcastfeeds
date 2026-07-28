@@ -245,34 +245,93 @@ def _create_episode(slug: str, guid: str, title: str, link: str) -> int:
         return ep.id
 
 
+VERDICT_RE = re.compile(
+    r"VERDICT:\s*(brief|not-a-book)\b\s*(?:[—-]\s*(.*))?", re.IGNORECASE
+)
+
+
+class _NotABook(Exception):
+    """Raised when the LLM's leading VERDICT line says the reading-list
+    reference isn't a book (spec: the "arxiv sanity" / "ffmpeg assembly
+    instructions" bug — a website or CLI tool must not become a published
+    dud episode). Carries the human-readable proposal text."""
+
+
+def _split_verdict(raw: str) -> str:
+    """Strip the leading 'VERDICT: brief' line and return the narration body.
+    Raises _NotABook(proposal) if the LLM instead said this isn't a book.
+    A reply with no parseable VERDICT line is treated as 'brief' with the raw
+    text used untouched — fail safe towards narrating rather than silently
+    dropping a valid-but-unlabelled reply."""
+    first, _, rest = raw.strip().partition("\n")
+    m = VERDICT_RE.match(first.strip())
+    if not m:
+        return raw
+    if m.group(1).lower() == "not-a-book":
+        reason = (m.group(2) or "").strip() or "not confident this is a book."
+        raise _NotABook(f"Not a book — {reason}"[:300])
+    return rest.strip()
+
+
 async def _render_book_brief(ep_id: int, item_id: int, inbox, title: str,
                              notes: str) -> None:
     """LLM book brief (spec §4): generate the spoken text, park it in
     source_text, and let the normal pipeline narrate it (an episode with no
     link falls back to source_text as its body). On failure the queue item
-    goes back to 'queued' with the error inline — nothing vanishes silently."""
+    goes back to 'queued' with the error inline — nothing vanishes silently.
+
+    The LLM leads its reply with a machine-readable VERDICT line so a "this
+    isn't a book" demurral (a website, a CLI tool, ...) can be caught here
+    instead of turning into a published dud episode (see _split_verdict)."""
     from . import db as _db
     from .ingest import process_episode
     from .summarize import llm
 
     prompt = (
-        "You are preparing a short podcast brief about a book someone added to "
-        "their reading list. Write 400-600 words of flowing spoken prose (no "
-        "headings, no lists, no markdown) covering: what the book is and who "
-        "wrote it, its core argument or story, its reception and context, and "
-        "why it might be worth reading. Open with a sentence making clear this "
-        "is a brief ABOUT the book, not the book itself. If you are not "
-        "confident you know this book, say so honestly and keep it short.\n\n"
-        f"Book reference: {title}" + (f"\nNotes: {notes}" if notes else "")
+        "You are triaging a reading-list reference for a podcast queue, then "
+        "(if it really is a book) writing a short brief about it.\n\n"
+        "Your reply's FIRST LINE must be exactly one of:\n"
+        "  VERDICT: brief\n"
+        "  VERDICT: not-a-book — <one-line reason, plus a suggested retag, "
+        "e.g. \"looks like a website; retag as article and supply a URL\">\n"
+        "Use the second form whenever the reference is clearly not a book "
+        "(a website, tool, paper, CLI utility, ...) or you have no idea what "
+        "book it could be.\n\n"
+        "If the verdict is 'brief', follow that line with 400-600 words of "
+        "flowing spoken prose (no headings, no lists, no markdown) covering: "
+        "what the book is and who wrote it, its core argument or story, its "
+        "reception and context, and why it might be worth reading. Open with "
+        "a sentence making clear this is a brief ABOUT the book, not the book "
+        "itself.\n\n"
+        f"Reading-list reference: {title}" + (f"\nNotes: {notes}" if notes else "")
     )
     try:
-        brief = await llm(prompt)
+        raw = await llm(prompt)
+        brief = _split_verdict(raw)
         with _db.session() as s:
             ep = s.get(Episode, ep_id)
             ep.source_text = brief
             s.add(ep)
             s.commit()
         await process_episode(ep_id, inbox)
+    except _NotABook as exc:
+        # An honest "this isn't a book" is not a failure to retry — no episode
+        # is worth publishing, so delete the placeholder row entirely (spec:
+        # "create NO episode") and surface an actionable proposal instead of
+        # a plain error.
+        log.info("ticktick: book brief for queue item %s got a not-a-book verdict: %s",
+                 item_id, exc)
+        with _db.session() as s:
+            ep = s.get(Episode, ep_id)
+            if ep:
+                s.delete(ep)
+            item = s.get(TickTickItem, item_id)
+            item.status = "queued"
+            item.last_error = ""
+            item.proposal = str(exc)
+            item.episode_id = None
+            s.add(item)
+            s.commit()
     except Exception as exc:
         log.exception("book brief failed for queue item %s", item_id)
         with _db.session() as s:
