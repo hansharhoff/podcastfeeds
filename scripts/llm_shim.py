@@ -21,6 +21,24 @@ from fastapi import FastAPI, HTTPException, Request
 MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
 PORT = int(os.environ.get("LLM_SHIM_PORT", "8765"))
 
+# Isolate the CLI from Hans' personal Claude Code setup. Without this the CLI
+# loads ~/.claude: the SessionStart hook ("if there is even a 1% chance a skill
+# applies you MUST invoke it") plus the whole skills roster. A book-brief prompt
+# reads like a creative-work request, so the brainstorming skill fired and the
+# CLI answered ABOUT the skill instead of writing the brief — that meta-text was
+# narrated as episode 337 (2026-07-28).
+#   --setting-sources ""      no user/project/local settings, so no hooks
+#   --disable-slash-commands  no skills
+# NOT --bare: it reads auth strictly from ANTHROPIC_API_KEY/apiKeyHelper and
+# never OAuth, and this host has no API key — the shim runs on the subscription.
+ISOLATION = ["--setting-sources", "", "--disable-slash-commands"]
+PIPELINE_ROLE = (
+    "You are a text generation service for an automated podcast pipeline. "
+    "Return only the requested text, ready to be spoken aloud. Never mention "
+    "skills, tools, files, permissions, or your own configuration, and never "
+    "ask the caller a question — there is no interactive user on the other end."
+)
+
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
@@ -44,7 +62,10 @@ async def complete(request: Request):
     prompt = (data.get("prompt") or "").strip()
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
-    cmd = ["claude", "-p", prompt, "--model", data.get("model") or MODEL]
+    cmd = [
+        "claude", "-p", prompt, "--model", data.get("model") or MODEL,
+        *ISOLATION, "--append-system-prompt", PIPELINE_ROLE,
+    ]
     tools = data.get("allowed_tools") or []
     if tools:  # e.g. ["WebSearch"] — nothing else is ever granted
         cmd += ["--allowedTools", ",".join(str(t) for t in tools)]
@@ -52,7 +73,7 @@ async def complete(request: Request):
     if data.get("thinking"):
         env["MAX_THINKING_TOKENS"] = str(data.get("thinking_tokens") or 10000)
     proc = await asyncio.create_subprocess_exec(
-        *cmd, env=env,
+        *cmd, env=env, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
@@ -84,6 +105,8 @@ async def vision(request: Request):
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", f"First use the Read tool on the image file {path}, then:\n{prompt}",
             "--model", data.get("model") or MODEL, "--allowedTools", "Read",
+            *ISOLATION, "--append-system-prompt", PIPELINE_ROLE,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:

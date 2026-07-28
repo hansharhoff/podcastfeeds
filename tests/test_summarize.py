@@ -73,6 +73,25 @@ def test_looks_meta_passes_real_script():
     assert looks_meta("Today the market rallied on strong earnings across tech.") is False
 
 
+def test_looks_meta_detects_harness_self_talk():
+    """Ep. 337: the shim's `claude` CLI loaded Hans' personal skills and
+    narrated commentary about the brainstorming skill instead of a book brief."""
+    assert looks_meta(
+        "I've loaded the brainstorming skill, but I want to flag something: this "
+        "skill is designed for designing software projects and features, and its "
+        "full process (through design doc, user review, then invoking "
+        "writing-plans for an implementation plan) assumes a codebase."
+    ) is True
+
+
+def test_looks_meta_passes_prose_mentioning_skills_and_tools():
+    """The guard is phrase-level: ordinary articles talk about skills and tools."""
+    assert looks_meta(
+        "Reading is a skill that compounds, and the best tool for building it is "
+        "a habit. Doerr argues that measurement is what turns intent into action."
+    ) is False
+
+
 def test_has_markdown_table_detects_pipe_table():
     assert has_markdown_table(EP232_TABLE) is True
     assert has_markdown_table("Just a normal sentence with no table.") is False

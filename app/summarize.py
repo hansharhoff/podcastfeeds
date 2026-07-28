@@ -224,7 +224,16 @@ _META_RE = re.compile(
     r"i cannot|i(’|')?m unable|i am unable|composed of content|"
     r"i need permission|grant .{0,20}permission|webfetch|allowedtools|"
     r"interactive claude code|could you (either|please )?(grant|provide)|"
-    r"i(’|')?ll need (access|permission)|unable to (fetch|access|retrieve))",
+    r"i(’|')?ll need (access|permission)|unable to (fetch|access|retrieve)|"
+    # Harness self-talk: the CLI answering about its own skills/config instead
+    # of doing the job (ep. 337 — a book-brief prompt tripped the brainstorming
+    # skill and the shim narrated Claude discussing that skill). The shim now
+    # isolates the CLI; this is the second line of defence. Phrase-level on
+    # purpose — a bare "skill"/"tool" appears in legitimate article prose.
+    r"i(’|')?ve loaded|i have loaded|loaded the .{0,30}skill|"
+    r"(this|the) (skill|slash command|subagent) (is|was) (designed|meant|intended)|"
+    r"invoking [a-z-]{3,30} (skill|plan)|"
+    r"my (instructions|configuration|system prompt)\b)",
     re.I,
 )
 
