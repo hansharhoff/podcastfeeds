@@ -45,6 +45,25 @@ def substack_ref(source: SourceDef, link: str) -> tuple[str, str] | None:
     return (sub, slug) if slug else None
 
 
+def substack_ref_from_url(url: str) -> tuple[str, str] | None:
+    """(subdomain, slug) for a Substack post URL, judged on the URL alone.
+
+    `substack_ref` above keys off the SOURCE feed, which is right for a
+    source's own items but useless for a link followed out of a social post —
+    there the target's host is all we have. Custom-domain publications
+    (slowboring.com) are indistinguishable from any other blog by URL and are
+    deliberately not matched here."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if not host.endswith(".substack.com") or "/p/" not in parsed.path:
+        return None
+    sub = host[: -len(".substack.com")]
+    slug = parsed.path.rstrip("/").split("/")[-1]
+    return (sub, slug) if sub and slug else None
+
+
 async def _api_json(url: str, cookie_url: str | None = None) -> dict | None:
     headers = {"User-Agent": UA, "Accept": "application/json"}
     cookie = _cookie_for(cookie_url or url)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import io
+import json
 import logging
 import os
 import re
@@ -318,6 +319,75 @@ def _img_src(el) -> str:
     return ""
 
 
+# Substack renders a quoted tweet as an empty <div class="twitter-embed"
+# data-attrs="{json}"> — the tweet body lives ONLY in that JSON, so a DOM walk
+# sees no text and drops it (ep 380: "spotted by :" trailed off into silence).
+# Other embeds on the same mechanism (subscribe widgets, share buttons) carry
+# no article content and are deliberately absent from this map.
+_NARRATABLE_EMBEDS = ("twitter-embed",)
+
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _embed_attrs(el) -> dict | None:
+    """Decoded data-attrs JSON for a narratable embed div, else None."""
+    cls = el.get("class", "") or ""
+    if not any(name in cls for name in _NARRATABLE_EMBEDS):
+        return None
+    raw = el.get("data-attrs") or ""
+    if not raw:
+        return None
+    try:
+        attrs = json.loads(raw)
+    except (ValueError, TypeError):
+        log.warning("unparseable embed data-attrs on .%s", cls)
+        return None
+    return attrs if isinstance(attrs, dict) else None
+
+
+def _speakable_tweet(text: str) -> str:
+    """One narratable paragraph from a tweet's raw text.
+
+    Tweets are line-broken prose, often with `>` greentext markers that a
+    voice would either skip or read as "greater than". Each line becomes a
+    sentence instead."""
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"^\s*>+\s*", "", line).strip()
+        line = re.sub(r"\s+", " ", line)
+        if line:
+            lines.append(line if line[-1] in ".!?,;:" else line + ".")
+    return " ".join(lines)
+
+
+def _embed_segments(attrs: dict) -> list[dict]:
+    """Tweet embed -> a quote segment (attributed) plus any attached photos.
+
+    The photos matter as much as the words here: on screenshot-heavy posts the
+    tweet's image IS the content being pointed at, and it feeds the vision
+    captioner downstream."""
+    # full_text arrives double-escaped (&amp;gt; in the attribute -> &gt; after
+    # lxml unescapes it), and bare t.co URLs read terribly aloud.
+    text = html.unescape(str(attrs.get("full_text") or "")).strip()
+    text = _URL_RE.sub("", text)
+    text = _speakable_tweet(text)
+    segments: list[dict] = []
+    if text:
+        who = str(attrs.get("name") or "").strip()
+        handle = str(attrs.get("username") or "").strip()
+        if not who and handle:
+            who = f"@{handle}"
+        segments.append({
+            "type": "quote",
+            "text": f"{who} on X: {text}" if who else text,
+        })
+    for photo in attrs.get("photos") or []:
+        src = (photo or {}).get("img_url", "") if isinstance(photo, dict) else ""
+        if isinstance(src, str) and src.startswith("http"):
+            segments.append({"type": "image", "src": src, "caption": ""})
+    return segments
+
+
 def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
     """Reading-order segments from ALREADY-CLEAN article HTML (Substack API
     body_html, DR article JSON, reader-proxy output) — a direct DOM walk that,
@@ -340,31 +410,54 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             el.tag == "img"
         )
 
+    def emit_image(el):
+        src = _img_src(el)
+        cap_el = el.find(".//figcaption")
+        caption = cap_el.text_content().strip() if cap_el is not None else ""
+        if src.startswith("http"):
+            segments.append({"type": "image", "src": src, "caption": caption})
+
     def _walk_list(lst):
-        # Each <li>'s OWN text (nested lists excluded), then recurse into the
-        # nested lists — otherwise the outer item's text_content() already
-        # contains every nested item and they get narrated twice (ep 236).
+        # Each <li>'s OWN text (nested lists excluded), then its non-text
+        # blocks in document order — otherwise the outer item's text_content()
+        # already contains every nested item and they get narrated twice
+        # (ep 236). Images and embeds are blocks too: a listicle whose every
+        # point ends in a screenshot lost all of them while this loop only
+        # looked for text (ep 380).
         for li in lst.iterchildren("li"):
             parts = [li.text or ""]
-            nested = []
+            blocks = []
             for sub in li:
-                if isinstance(sub.tag, str) and sub.tag in ("ul", "ol"):
-                    nested.append(sub)
+                is_block = isinstance(sub.tag, str) and (
+                    sub.tag in ("ul", "ol")
+                    or is_image_block(sub)
+                    or _embed_attrs(sub) is not None
+                )
+                if is_block:
+                    blocks.append(sub)
                 else:
                     parts.append(sub.text_content())
                 parts.append(sub.tail or "")
             t = " ".join(p.strip() for p in parts if p and p.strip())
             if t:
                 segments.append({"type": "text", "text": t})
-            for sub in nested:
-                _walk_list(sub)
+            for sub in blocks:
+                if sub.tag in ("ul", "ol"):
+                    _walk_list(sub)
+                elif is_image_block(sub):
+                    emit_image(sub)
+                else:
+                    segments.extend(_embed_segments(_embed_attrs(sub) or {}))
 
     def walk(el):
         for child in el:
             tag = child.tag if isinstance(child.tag, str) else ""
             if not tag:
                 continue
-            if tag in HEADINGS:
+            embed = _embed_attrs(child)
+            if embed is not None:
+                segments.extend(_embed_segments(embed))
+            elif tag in HEADINGS:
                 t = child.text_content().strip()
                 if t:
                     segments.append({"type": "heading", "text": t})
@@ -373,11 +466,7 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
                 if t:
                     segments.append({"type": "quote", "text": t})
             elif is_image_block(child):
-                src = _img_src(child)
-                cap_el = child.find(".//figcaption")
-                caption = cap_el.text_content().strip() if cap_el is not None else ""
-                if src.startswith("http"):
-                    segments.append({"type": "image", "src": src, "caption": caption})
+                emit_image(child)
             elif tag == "p":
                 # A paragraph may embed an inline image (rare) — capture text then it.
                 t = child.text_content().strip()

@@ -178,6 +178,140 @@ def test_segments_from_clean_html_flat_list_unchanged():
     assert [s["text"] for s in segments] == ["alpha one", "beta two"]
 
 
+# ── images inside list items (ep 380 feedback, 2026-07-31: "Missing a lot of
+#    screenshot and other contents here"). The ep-236 nested-list fix above
+#    walked each <li> for TEXT only, so Gary Marcus's listicle — where every
+#    point is a sentence followed by a screenshot — narrated 0 of its 5
+#    images and left dangling colons behind. ──
+
+def test_segments_from_clean_html_keeps_images_inside_list_items():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ol>"
+        "<li><p>Summary that appeared on X:</p>"
+        '<div class="captioned-image-container"><figure>'
+        '<a href="https://substackcdn.com/image/fetch/shot.png"></a>'
+        "<figcaption>The thread</figcaption></figure></div></li>"
+        "<li><p>Second point</p></li>"
+        "</ol>"
+    )
+    _, segments = segments_from_clean_html(html)
+    kinds = [s["type"] for s in segments]
+    assert kinds == ["text", "image", "text"], kinds
+    assert segments[1]["src"] == "https://substackcdn.com/image/fetch/shot.png"
+    assert segments[1]["caption"] == "The thread"
+
+
+def test_segments_from_clean_html_keeps_images_in_nested_list_items():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ul><li><p>Outer</p>"
+        "<ul><li><p>Inner</p>"
+        '<figure><img src="https://cdn.example/inner.jpg"></figure>'
+        "</li></ul></li></ul>"
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text", "text", "image"]
+    assert segments[2]["src"] == "https://cdn.example/inner.jpg"
+
+
+def test_list_item_image_does_not_duplicate_its_caption_as_text():
+    # The figcaption belongs to the image segment; it must not also be swept
+    # into the <li>'s own text (that would narrate it twice).
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ol><li><p>The point</p>"
+        '<figure><img src="https://cdn.example/a.jpg">'
+        "<figcaption>Caption text</figcaption></figure></li></ol>"
+    )
+    _, segments = segments_from_clean_html(html)
+    texts = [s["text"] for s in segments if s["type"] == "text"]
+    assert texts == ["The point"]
+
+
+# ── Substack tweet embeds (same ep 380 feedback). A quoted tweet is rendered
+#    as <div class="twitter-embed" data-attrs="{json}"> with NO text content —
+#    the tweet body lives only in the JSON. The DOM walk descended into it and
+#    emitted nothing, so "spotted by :" trailed off into silence. ──
+
+_TWEET_ATTRS = (
+    '{"url":"https://x.com/ns123abc/status/2082922547406848279",'
+    '"full_text":"WE&#39;RE CLOSE TO AGI. GIVE ME 500 BILLIONS.",'
+    '"username":"ns123abc","name":"NIK",'
+    '"photos":[{"img_url":"https://pbs.substack.com/media/HOgHBJa.jpg"}]}'
+)
+
+
+def test_tweet_embed_becomes_a_quote_segment():
+    from app.extract import segments_from_clean_html
+    html = f'<div class="twitter-embed" data-attrs=\'{_TWEET_ATTRS}\'></div>'
+    _, segments = segments_from_clean_html(html)
+    quotes = [s for s in segments if s["type"] == "quote"]
+    assert len(quotes) == 1
+    assert "WE'RE CLOSE TO AGI" in quotes[0]["text"]
+    assert "NIK" in quotes[0]["text"]
+
+
+def test_tweet_embed_photo_becomes_an_image_segment():
+    from app.extract import segments_from_clean_html
+    html = f'<div class="twitter-embed" data-attrs=\'{_TWEET_ATTRS}\'></div>'
+    _, segments = segments_from_clean_html(html)
+    images = [s for s in segments if s["type"] == "image"]
+    assert [i["src"] for i in images] == [
+        "https://pbs.substack.com/media/HOgHBJa.jpg"]
+
+
+def test_tweet_embed_inside_list_item_is_kept():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ol><li><p>spotted by:</p>"
+        f'<div class="twitter-embed" data-attrs=\'{_TWEET_ATTRS}\'></div>'
+        "</li></ol>"
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text", "quote", "image"]
+
+
+def test_tweet_greentext_markers_become_sentences():
+    # ">" line markers would be read aloud as "greater than" (or dropped,
+    # merging six shouted lines into one run-on). Each line is a sentence.
+    from app.extract import _speakable_tweet
+    assert _speakable_tweet(">CLOSE TO AGI \n>GIVE ME 500 BILLIONS\n>I PROMISE!") == (
+        "CLOSE TO AGI. GIVE ME 500 BILLIONS. I PROMISE!")
+
+
+def test_tweet_text_drops_bare_urls():
+    from app.extract import segments_from_clean_html
+    attrs = '{"full_text":"read this https://t.co/abc123 now","name":"Ann"}'
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: read this now."
+
+
+def test_textless_tweet_embed_is_skipped():
+    from app.extract import segments_from_clean_html
+    html = '<div class="twitter-embed" data-attrs=\'{"username":"x"}\'></div>'
+    _, segments = segments_from_clean_html(html)
+    assert segments == []
+
+
+def test_malformed_embed_attrs_do_not_crash():
+    from app.extract import segments_from_clean_html
+    html = '<div class="twitter-embed" data-attrs="not json {{"></div><p>after</p>'
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text"]
+
+
+def test_subscribe_widget_embed_is_not_narrated():
+    from app.extract import segments_from_clean_html
+    html = (
+        '<div class="subscribe-widget" data-attrs=\'{"text":"Subscribe now"}\'>'
+        "</div><p>real body</p>"
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["text"] for s in segments] == ["real body"]
+
+
 # ── link-forwarding social posts (X/Bluesky/Mastodon/Threads): the post is a
 #    pointer, not the payload — follow it to the article it links to (ep. 253
 #    feedback: Demis Hassabis's tweet pointing at his essay got narrated as a
