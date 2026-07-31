@@ -417,23 +417,32 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
         if src.startswith("http"):
             segments.append({"type": "image", "src": src, "caption": caption})
 
+    def carries_media(el) -> bool:
+        """True if this element IS or CONTAINS something worth its own segment.
+        A wrapper <div> around a <figure> is common enough that a list item
+        holding one must not be flattened into text."""
+        if is_image_block(el) or _embed_attrs(el) is not None:
+            return True
+        return any(
+            is_image_block(d) or _embed_attrs(d) is not None
+            for d in el.iterdescendants() if isinstance(d.tag, str)
+        )
+
     def _walk_list(lst):
         # Each <li>'s OWN text (nested lists excluded), then its non-text
         # blocks in document order — otherwise the outer item's text_content()
         # already contains every nested item and they get narrated twice
         # (ep 236). Images and embeds are blocks too: a listicle whose every
         # point ends in a screenshot lost all of them while this loop only
-        # looked for text (ep 380).
+        # looked for text (ep 380). Blocks go back through handle_child, so a
+        # list item gets exactly the same treatment as top-level content.
         for li in lst.iterchildren("li"):
             parts = [li.text or ""]
             blocks = []
             for sub in li:
-                is_block = isinstance(sub.tag, str) and (
-                    sub.tag in ("ul", "ol")
-                    or is_image_block(sub)
-                    or _embed_attrs(sub) is not None
-                )
-                if is_block:
+                if not isinstance(sub.tag, str):
+                    continue
+                if sub.tag in ("ul", "ol") or carries_media(sub):
                     blocks.append(sub)
                 else:
                     parts.append(sub.text_content())
@@ -442,43 +451,41 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             if t:
                 segments.append({"type": "text", "text": t})
             for sub in blocks:
-                if sub.tag in ("ul", "ol"):
-                    _walk_list(sub)
-                elif is_image_block(sub):
-                    emit_image(sub)
-                else:
-                    segments.extend(_embed_segments(_embed_attrs(sub) or {}))
+                handle_child(sub)
+
+    def handle_child(child):
+        tag = child.tag if isinstance(child.tag, str) else ""
+        if not tag:
+            return
+        embed = _embed_attrs(child)
+        if embed is not None:
+            segments.extend(_embed_segments(embed))
+        elif tag in HEADINGS:
+            t = child.text_content().strip()
+            if t:
+                segments.append({"type": "heading", "text": t})
+        elif tag == "blockquote":
+            t = child.text_content().strip()
+            if t:
+                segments.append({"type": "quote", "text": t})
+        elif is_image_block(child):
+            emit_image(child)
+        elif tag == "p":
+            # A paragraph may embed an inline image (rare) — capture text then it.
+            t = child.text_content().strip()
+            if t:
+                segments.append({"type": "text", "text": t})
+            for img in child.iter("img"):
+                if img.get("src", "").startswith("http"):
+                    segments.append({"type": "image", "src": img.get("src"), "caption": ""})
+        elif tag in ("ul", "ol"):
+            _walk_list(child)
+        else:
+            walk(child)  # descend into wrappers (div, section, article, a…)
 
     def walk(el):
         for child in el:
-            tag = child.tag if isinstance(child.tag, str) else ""
-            if not tag:
-                continue
-            embed = _embed_attrs(child)
-            if embed is not None:
-                segments.extend(_embed_segments(embed))
-            elif tag in HEADINGS:
-                t = child.text_content().strip()
-                if t:
-                    segments.append({"type": "heading", "text": t})
-            elif tag == "blockquote":
-                t = child.text_content().strip()
-                if t:
-                    segments.append({"type": "quote", "text": t})
-            elif is_image_block(child):
-                emit_image(child)
-            elif tag == "p":
-                # A paragraph may embed an inline image (rare) — capture text then it.
-                t = child.text_content().strip()
-                if t:
-                    segments.append({"type": "text", "text": t})
-                for img in child.iter("img"):
-                    if img.get("src", "").startswith("http"):
-                        segments.append({"type": "image", "src": img.get("src"), "caption": ""})
-            elif tag in ("ul", "ol"):
-                _walk_list(child)
-            else:
-                walk(child)  # descend into wrappers (div, section, article, a…)
+            handle_child(child)
 
     walk(root)
     return "", segments
