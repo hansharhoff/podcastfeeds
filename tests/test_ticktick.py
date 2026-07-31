@@ -572,3 +572,58 @@ def test_queue_rows_surfaces_proposal():
     assert len(rows) == 1
     assert rows[0]["error"] == ""
     assert "retag as article" in rows[0]["proposal"]
+
+
+# ── redo/unskip on a queue-generated episode must re-run the kind-routed
+#    generate path, not the generic requeue (eps 330/332/337, 2026-07-31).
+#    Those episodes carry no link, so process_episode fell into its no-link
+#    fallback and re-narrated the stale brief already on the row — which also
+#    meant a pre-fix-3 dud could never pick up the not-a-book verdict. ──
+
+def test_redo_of_queue_episode_routes_through_generate_item(monkeypatch):
+    from app import ticktick as tt
+    from app import web
+
+    called = {}
+
+    async def fake_generate_item(item_id, mode="summary"):
+        called["item_id"] = item_id
+        return 1
+
+    monkeypatch.setattr(tt, "generate_item", fake_generate_item)
+    # Run the spawned coroutine inline so the routing is actually exercised.
+    monkeypatch.setattr(
+        web, "spawn",
+        lambda coro: asyncio.new_event_loop().run_until_complete(coro))
+
+    with db.session() as s:
+        ep = Episode(source_slug="inbox", guid="ticktick:redo-1",
+                     title="ffmpeg assembly instructions", link="")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+        item = TickTickItem(task_id="redo-1", project="Z Reading",
+                            title="ffmpeg assembly instructions", kind="book",
+                            status="generated", episode_id=ep_id)
+        s.add(item)
+        s.commit()
+        s.refresh(item)
+        item_id = item.id
+
+    assert web._regenerate_from_queue(ep_id) == item_id
+    assert called["item_id"] == item_id
+
+
+def test_redo_of_ordinary_episode_does_not_touch_the_queue(monkeypatch):
+    from app import web
+
+    with db.session() as s:
+        ep = Episode(source_slug="inbox", guid="https://example.com/plain",
+                     title="An article", link="https://example.com/plain")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    assert web._regenerate_from_queue(ep_id) is None

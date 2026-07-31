@@ -14,7 +14,7 @@ from sqlmodel import select
 from . import db
 from .config import BASE_URL, MEDIA_DIR, SourceDef, get_token, load_config
 from .covers import cover_path
-from .db import Episode
+from .db import Episode, TickTickItem
 from .feedgen import build_feed
 from .ingest import (
     build_digest,
@@ -95,6 +95,32 @@ def _requeue(episode_id: int, digest_error: str | None = None) -> None:
         s.add(ep)
         s.commit()
     spawn(process_episode(episode_id, source))
+
+
+def _regenerate_from_queue(episode_id: int) -> int | None:
+    """If this episode came from the TickTick queue, re-run the kind-routed
+    generate path and return the item id; otherwise None.
+
+    A queue-generated episode carries no link — its body came from the book
+    brief (or PDF) path, parked in `source_text`. A plain requeue drops into
+    process_episode's no-link fallback and re-narrates whatever stale text is
+    already on the row, so eps 330/332 read their old dud brief back (with the
+    show-notes HTML in it) and ep 337's leaked meta-text was rejected outright
+    (2026-07-31). Going through generate_item regenerates the brief for real,
+    which is also the only way a "not a book" verdict can raise a proposal on
+    an item that was generated before that check existed."""
+    from .ticktick import generate_item
+
+    with db.session() as s:
+        item = s.exec(select(TickTickItem).where(
+            TickTickItem.episode_id == episode_id)).first()
+        if not item:
+            return None
+        item_id = item.id
+    # Mode is not recorded on the item, so a redone PDF gets the 'summary'
+    # default — re-click 'full read' in the queue for the other one.
+    spawn(generate_item(item_id))
+    return item_id
 
 
 @app.middleware("http")
@@ -327,6 +353,11 @@ async def api_unskip(token: str, episode_id: int):
     """Un-skip a skipped episode: queue it for generation with the current
     pipeline (recovers backlog / false-paywall / filtered items on demand)."""
     _check(token)
+    item_id = _regenerate_from_queue(episode_id)
+    if item_id is not None:
+        log.info("unskip requested for episode %s -> ticktick item %s",
+                 episode_id, item_id)
+        return RedirectResponse(url=f"/{token}/", status_code=303)
     _requeue(episode_id, "digests are built on schedule, not per-episode")
     log.info("unskip requested for episode %s", episode_id)
     return RedirectResponse(url=f"/{token}/", status_code=303)
@@ -336,6 +367,11 @@ async def api_unskip(token: str, episode_id: int):
 async def api_redo(token: str, episode_id: int):
     """Regenerate an episode with the current pipeline (explicit user request)."""
     _check(token)
+    item_id = _regenerate_from_queue(episode_id)
+    if item_id is not None:
+        log.info("redo requested for episode %s -> ticktick item %s",
+                 episode_id, item_id)
+        return RedirectResponse(url=f"/{token}/", status_code=303)
     _requeue(episode_id, "digests can't be redone; the next scheduled build uses the latest pipeline")
     log.info("redo requested for episode %s", episode_id)
     return RedirectResponse(url=f"/{token}/", status_code=303)

@@ -481,3 +481,40 @@ def test_process_episode_rejects_target_not_longer_than_post(monkeypatch):
     assert "followed_link" not in prov
     assert prov["link"] == post_url
     assert prov["link_follow"] == "skipped: not longer than post"
+
+
+# ── the no-link fallback fed raw HTML to the TTS (ep 330/332, 2026-07-31):
+#    a redo of a queue-generated episode found no link, fell back to the
+#    longest of source_text/description, and narrated the show-notes markup
+#    verbatim — "<p><strong>Source: Inbox – shared articles</strong></p>". ──
+
+def test_no_link_fallback_strips_html_before_narrating(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    captured = {}
+
+    async def fake_synthesize(script, **kwargs):
+        captured["script"] = script
+        return "out.mp3", 4321, 90
+
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(
+            source_slug=inbox.slug, guid="ticktick:42", title="ffmpeg", link="",
+            description="<p><strong>Source: Inbox</strong></p>",
+            source_text="<p>A brief about the thing. " + "More prose. " * 30 + "</p>",
+        )
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    script = captured.get("script", "")
+    assert "<p>" not in script and "<strong>" not in script, script[:200]
+    assert "A brief about the thing." in script
