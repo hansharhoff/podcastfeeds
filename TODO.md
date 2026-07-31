@@ -114,7 +114,53 @@ path; these are hardening, testability, and maintainability items.
       Covered by tests; backtested against the live post (37 repeated
       chunks → 1, which is genuine prose repetition).
 
+## Reliability (from the ep. 253 link-following review, 2026-07-28)
+- [x] A link followed OUT of a social post into Substack took the generic
+      `fetch_html` path, so a paid essay pointed at by a tweet came back as its
+      free preview. `substack_ref_from_url` judges the target by URL alone
+      (the source feed is no help for a followed link) and the cookie-aware
+      `fetch_post` runs first when it matches, falling back to the generic
+      fetch otherwise. Custom-domain publications (slowboring.com) are
+      indistinguishable by URL and deliberately not matched. Covered by tests.
+
+## Reliability (from ep. 380 feedback, 2026-07-31)
+- [x] Images inside list items were silently dropped — a REGRESSION from the
+      ep-236 fix directly above: `_walk_list` walked each `<li>` for text only
+      and never consulted `is_image_block`. Gary Marcus's listicle format (a
+      sentence, then a screenshot, seven times over) narrated 0 of its 5
+      images and left dangling colons behind ("spotted by :"). Each `<li>` now
+      emits its own text, then its image/embed/nested-list blocks in document
+      order. Covered by tests; backtested against the live post (8 text-only
+      segments → 8 text + 6 image + 2 quote).
+- [x] Substack tweet embeds were dropped entirely: `<div class="twitter-embed"
+      data-attrs="{json}">` has no text content, so the DOM walk descended into
+      it and emitted nothing. The tweet body lives only in that JSON. Now
+      emitted as an attributed quote plus any attached photos, with `>`
+      greentext markers turned into sentences and bare t.co URLs stripped
+      (both read terribly aloud). Subscribe widgets and share buttons use the
+      same mechanism and are deliberately NOT in `_NARRATABLE_EMBEDS`.
+
+## Known gaps (decided but not acted on)
+- [ ] **Paid post with `wordcount` missing on BOTH hosts** — defer vs. shorter
+      CTA-free body. When `wordcount` is absent everywhere, "fuller body wins"
+      can prefer a full body whose embedded CTA trips `is_paywalled` (→ defer)
+      over a shorter CTA-free preview that would previously have published,
+      silently truncated. The 2026-07-25 fix chose defer-over-silent-truncation
+      deliberately. Hans to confirm or revisit — no evidence it has bitten yet.
+- [ ] **Phase 3: non-article media in the TickTick queue.** A YouTube playlist,
+      a Slideshare deck and thimbleweedpark.com sit in the queue classified as
+      `article` because they are non-PDF URLs. Generating them will fail
+      visibly (the item stays queued with the error inline), which is the
+      intended floor — but video/slide extraction was explicitly out of scope
+      for v1 and this is the natural next step.
+
 ## Observability
+- [x] Per-call latency + outcome logging in the LLM shim (`scripts/llm_shim.py`):
+      both endpoints share `_run_cli`, which logs duration, model, prompt and
+      reply sizes to stderr AND `data/llm_shim.log`. Motivated by an unclosed
+      stdin that cost a flat 3s per call for weeks and was found only by
+      accident (2026-07-28). The file handler matters because this host has no
+      usable session D-Bus, so `journalctl --user` is not a reliable reader.
 - [x] In-app paid-access health check (`app/health.py`): every 6h + at boot,
       fetch each `paid: true` source's newest paid post through the real
       fetch path; admin banner + WARNING log on failure. Survives independent

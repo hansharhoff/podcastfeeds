@@ -35,7 +35,7 @@ from .extract import (
     segments_from_clean_html,
     strip_html,
 )
-from .substack import fetch_post, substack_ref
+from .substack import fetch_post, substack_ref, substack_ref_from_url
 from .summarize import (
     article_summary,
     digest_script,
@@ -800,9 +800,24 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                                 link_follow = "skipped: same-platform article"
                             else:
                                 try:
-                                    target_html = await fetch_html(target)
-                                    target_title, target_segs = extract_segments(target_html, target)
-                                    _, target_body = extract_article(target_html, target)
+                                    # A link into Substack goes through the
+                                    # post API, not the generic fetch: that is
+                                    # the only cookie-aware path, so a paid
+                                    # essay pointed at by a tweet arrives in
+                                    # full instead of as its free preview.
+                                    tref = substack_ref_from_url(target)
+                                    tpost = await fetch_post(*tref) if tref else None
+                                    if tpost and tpost["accessible"] and tpost["body_html"]:
+                                        target_html = tpost["body_html"]
+                                        _, target_segs = segments_from_clean_html(target_html)
+                                        _, target_body = extract_article(target_html, target)
+                                        target_title = tpost["title"]
+                                        target_image = tpost["cover_image"]
+                                    else:
+                                        target_html = await fetch_html(target)
+                                        target_title, target_segs = extract_segments(target_html, target)
+                                        _, target_body = extract_article(target_html, target)
+                                        target_image = extract_og_image(target_html, target)
                                 except Exception as exc:
                                     log.warning("outbound link fetch failed for %s -> %s: %s",
                                                 fetch_url, target, exc)
@@ -820,7 +835,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                                         link_follow = "skipped: not longer than post"
                                     else:
                                         html_text, segments, body = target_html, target_segs, target_body
-                                        og_image = extract_og_image(target_html, target) or og_image
+                                        og_image = target_image or og_image
                                         title = target_title or title
                                         link_source, link = fetch_url, target
                                         followed_link = target

@@ -183,3 +183,24 @@ def test_no_wordcount_still_falls_back_to_paywall_text(monkeypatch):
     post = substack.post_from_api({"title": "t", "body_html": _html(500),
                                    "audience": "only_paid"})
     assert post["accessible"] is False
+
+
+# ── a link followed OUT of a social post into Substack must use the post API,
+#    not the generic fetch: the cookie-aware path is the only one that returns
+#    the full body of a paid essay (found reviewing the ep-253 link-following
+#    fix, 2026-07-28; a tweet pointing at a paid post came back as a preview). ──
+
+def test_substack_ref_from_url_matches_post_urls():
+    from app.substack import substack_ref_from_url
+    assert substack_ref_from_url(
+        "https://noahpinion.substack.com/p/some-essay") == ("noahpinion", "some-essay")
+    assert substack_ref_from_url(
+        "https://www.noahpinion.substack.com/p/some-essay/") == ("noahpinion", "some-essay")
+
+
+def test_substack_ref_from_url_ignores_non_posts_and_other_hosts():
+    from app.substack import substack_ref_from_url
+    assert substack_ref_from_url("https://noahpinion.substack.com/archive") is None
+    assert substack_ref_from_url("https://www.slowboring.com/p/essay") is None
+    assert substack_ref_from_url("https://substack.com/p/essay") is None
+    assert substack_ref_from_url("not a url") is None
