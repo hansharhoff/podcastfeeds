@@ -518,3 +518,67 @@ def test_no_link_fallback_strips_html_before_narrating(monkeypatch):
     script = captured.get("script", "")
     assert "<p>" not in script and "<strong>" not in script, script[:200]
     assert "A brief about the thing." in script
+
+
+# ── silent truncation of long articles (ep 239, 2026-07-31: "it is missing a
+#    bunch of stuff"). max_chars is a deliberate TTS-cost guard, but the cut
+#    left no trace — that ACX review lost 66% of 117k chars and nobody knew
+#    until Hans said so two weeks later. The cut still happens; it is no
+#    longer invisible. ──
+
+def test_truncated_long_article_is_recorded_in_provenance(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 4321, 90
+
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    long_body = "This is a sentence of the article. " * 3000  # ~105k chars
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="trunc-1", title="A very long read",
+                     link="", source_text=long_body)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    prov = json.loads(done.provenance)
+    assert prov["truncated_chars"] > 0, prov
+    assert prov["body_chars"] == inbox.max_chars
+    # sanity: what was dropped is what exceeded the cap
+    assert prov["truncated_chars"] == len(long_body.strip()) - inbox.max_chars
+
+
+def test_short_article_records_no_truncation(monkeypatch):
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 4321, 90
+
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="trunc-2", title="A short read",
+                     link="", source_text="Just a paragraph of prose. " * 40)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, inbox))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    prov = json.loads(done.provenance)
+    assert "truncated_chars" not in prov

@@ -908,6 +908,17 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 return
             raise RuntimeError("could not extract meaningful article text")
 
+        # Long-form sources routinely blow past max_chars (ACX book reviews,
+        # Zvi roundups). The cut itself is a deliberate TTS-cost guard, but it
+        # used to leave no trace at all: ep 239 lost 66% of a 117k-char review
+        # and the only signal was Hans noticing "it is missing a bunch of
+        # stuff" two weeks later. Record it so provenance and the logs show it.
+        dropped_chars = max(0, len(body) - source.max_chars)
+        if dropped_chars:
+            log.warning("TRUNCATED %s: narrating %d of %d chars (dropped %d, %.0f%%) "
+                        "— max_chars=%d for source %s", title[:50], source.max_chars,
+                        len(body), dropped_chars,
+                        100 * dropped_chars / len(body), source.max_chars, source.slug)
         body = body[: source.max_chars]
         language = detect_language(f"{title}\n{body}")
         # Voice roster key: the source is the "blogger" for rss feeds; for the
@@ -955,6 +966,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             "link": link, "language": language,
             "generated_at": utcnow().isoformat(),
         }
+        if dropped_chars:
+            # How much of the article never made it into the audio, so a
+            # silently-shortened episode is visible in the admin UI and to any
+            # monitoring that reads provenance (ep 239).
+            prov["truncated_chars"] = dropped_chars
+            prov["body_chars"] = source.max_chars
         if link_follow:
             # Set for every link-forwarding post (X/Bluesky/Mastodon/Threads),
             # whether or not a link was actually followed, so the admin UI
