@@ -140,6 +140,22 @@ path; these are hardening, testability, and maintainability items.
       (both read terribly aloud). Subscribe widgets and share buttons use the
       same mechanism and are deliberately NOT in `_NARRATABLE_EMBEDS`.
 
+## Reliability (found while redoing ep. 380, 2026-07-31)
+- [x] `redo`/`unskip` on a queue-generated episode did not re-run the
+      kind-routed generate path. Those episodes carry no link (the body comes
+      from the book brief, parked in `source_text`), so a plain requeue fell
+      into `process_episode`'s no-link fallback and re-narrated the stale text
+      already on the row. Consequences seen live: eps 330/332 read their old
+      dud brief back, ep 337's leaked meta-text was rejected by `looks_meta`
+      leaving nothing to narrate (→ skipped), and a dud generated before the
+      VERDICT check existed could never pick up a not-a-book proposal. Both
+      routes now check for a TickTick item and call `generate_item`. Mode is
+      not recorded on the item, so a redone PDF takes the `summary` default.
+- [x] The no-link fallback narrated raw HTML: eps 330/332 spoke
+      "&lt;p&gt;&lt;strong&gt;Source: Inbox – shared articles&lt;/strong&gt;&lt;/p&gt;"
+      aloud, because `source_text`/`description` (both of which can hold
+      markup) went to the TTS untouched. Now stripped first.
+
 ## Known gaps (decided but not acted on)
 - [ ] **Paid post with `wordcount` missing on BOTH hosts** — defer vs. shorter
       CTA-free body. When `wordcount` is absent everywhere, "fuller body wins"
