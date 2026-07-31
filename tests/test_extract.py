@@ -215,6 +215,33 @@ def test_segments_from_clean_html_keeps_images_in_nested_list_items():
     assert segments[2]["src"] == "https://cdn.example/inner.jpg"
 
 
+def test_segments_from_clean_html_keeps_image_wrapped_in_a_div_inside_a_list_item():
+    # Not every publication puts the figure directly in the <li>; a wrapper
+    # div would otherwise be flattened to text and the image lost.
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ol><li><p>The point</p>"
+        '<div class="wrapper"><div><figure>'
+        '<img src="https://cdn.example/deep.jpg"></figure></div></div>'
+        "</li></ol>"
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text", "image"]
+    assert segments[1]["src"] == "https://cdn.example/deep.jpg"
+
+
+def test_list_item_paragraph_with_inline_image_keeps_both():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ul><li><p>Look at this "
+        '<img src="https://cdn.example/inline.jpg"></p></li></ul>'
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text", "image"]
+    assert segments[0]["text"] == "Look at this"
+    assert segments[1]["src"] == "https://cdn.example/inline.jpg"
+
+
 def test_list_item_image_does_not_duplicate_its_caption_as_text():
     # The figcaption belongs to the image segment; it must not also be swept
     # into the <li>'s own text (that would narrate it twice).

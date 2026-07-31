@@ -13,6 +13,7 @@ import asyncio
 import base64
 import ipaddress
 import logging
+import logging.handlers
 import os
 import tempfile
 import time
@@ -41,7 +42,10 @@ def _setup_logging() -> None:
     log.addHandler(stream)
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(LOG_FILE)
+        # Rotate: this logs a line per LLM call forever otherwise, and the
+        # shim runs unattended for weeks at a time.
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=2_000_000, backupCount=3)
         file_handler.setFormatter(fmt)
         log.addHandler(file_handler)
     except OSError as exc:  # read-only dir etc. — stderr logging still stands
