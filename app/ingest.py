@@ -573,7 +573,8 @@ def _conversation_blocks(analysis: dict, main_voice: str, language: str,
 
 
 def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
-                  quote_voice: str, describer_voice: str, language: str, max_chars: int,
+                  quote_voice: str, describer_voice: str, language: str,
+                  max_chars: int | None,
                   images_meta: dict[str, dict], speaker_voice,
                   source_label: str = "", question_voice: str = "") -> tuple[list[dict], list[dict]]:
     """Turn ordered segments into TTS blocks (voice switches for quotes and
@@ -593,7 +594,7 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
             pending = []
 
     for seg in segments:
-        if used >= max_chars:
+        if max_chars is not None and used >= max_chars:
             break
         if seg["type"] in ("text", "dialogue") and is_cruft_line(seg["text"]):
             continue
@@ -908,18 +909,18 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 return
             raise RuntimeError("could not extract meaningful article text")
 
-        # Long-form sources routinely blow past max_chars (ACX book reviews,
-        # Zvi roundups). The cut itself is a deliberate TTS-cost guard, but it
-        # used to leave no trace at all: ep 239 lost 66% of a 117k-char review
+        # max_chars is opt-in per source now; by default the whole article is
+        # narrated. When a source does set it the cut still happens, but it is
+        # recorded rather than silent — ep 239 lost 66% of a 117k-char review
         # and the only signal was Hans noticing "it is missing a bunch of
-        # stuff" two weeks later. Record it so provenance and the logs show it.
-        dropped_chars = max(0, len(body) - source.max_chars)
+        # stuff" two weeks later.
+        dropped_chars = max(0, len(body) - source.max_chars) if source.max_chars else 0
         if dropped_chars:
             log.warning("TRUNCATED %s: narrating %d of %d chars (dropped %d, %.0f%%) "
                         "— max_chars=%d for source %s", title[:50], source.max_chars,
                         len(body), dropped_chars,
                         100 * dropped_chars / len(body), source.max_chars, source.slug)
-        body = body[: source.max_chars]
+            body = body[: source.max_chars]
         language = detect_language(f"{title}\n{body}")
         # Voice roster key: the source is the "blogger" for rss feeds; for the
         # inbox each site/domain is its own blogger and keeps its own voice.

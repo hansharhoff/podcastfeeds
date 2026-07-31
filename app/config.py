@@ -54,7 +54,14 @@ class SourceDef:
     max_items_per_poll: int = 3
     schedule: str = "30 6 * * *"  # cron, digest sources only
     prefer_existing_audio: bool = True
-    max_chars: int = 40000  # safety cap on TTS input length
+    # None = narrate the whole article (the default since 2026-07-31). The old
+    # 40000 default was a day-one guardrail labelled "safety cap on TTS input
+    # length", but TTS input is already chunked at 4000 chars in tts.py, so it
+    # capped nothing technical — it silently dropped 40-66% of long-form posts
+    # (ACX book reviews, Zvi roundups, Slow Boring essays) on FREE edge-tts
+    # voices, saving nothing. Set per-source only if a specific feed needs it;
+    # ElevenLabs spend is bounded separately by the monthly budget check.
+    max_chars: int | None = None
     description: str = ""
     enabled: bool = True
     digest_max_items: int = 15
