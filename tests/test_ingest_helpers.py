@@ -520,23 +520,27 @@ def test_no_link_fallback_strips_html_before_narrating(monkeypatch):
     assert "A brief about the thing." in script
 
 
-# ── silent truncation of long articles (ep 239, 2026-07-31: "it is missing a
-#    bunch of stuff"). max_chars is a deliberate TTS-cost guard, but the cut
-#    left no trace — that ACX review lost 66% of 117k chars and nobody knew
-#    until Hans said so two weeks later. The cut still happens; it is no
-#    longer invisible. ──
+# ── long articles are narrated WHOLE (ep 239, 2026-07-31: "it is missing a
+#    bunch of stuff"). The old 40000 default silently dropped 40-66% of ACX
+#    reviews, Zvi roundups and Slow Boring essays — on free edge-tts voices,
+#    so it saved nothing. max_chars is opt-in now; when a source does set it,
+#    the cut is recorded instead of silent. ──
 
-def test_truncated_long_article_is_recorded_in_provenance(monkeypatch):
+def test_long_article_is_narrated_in_full_by_default(monkeypatch):
     from app import ingest
     from app.db import Episode
 
+    captured = {}
+
     async def fake_synthesize(script, **kwargs):
+        captured["script"] = script
         return "out.mp3", 4321, 90
 
     monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
 
     config = load_config()
     inbox = next(s for s in config.sources if s.type == "inbox")
+    assert inbox.max_chars is None, "default must be uncapped"
     long_body = "This is a sentence of the article. " * 3000  # ~105k chars
     with db.session() as s:
         ep = Episode(source_slug=inbox.slug, guid="trunc-1", title="A very long read",
@@ -551,10 +555,41 @@ def test_truncated_long_article_is_recorded_in_provenance(monkeypatch):
     with db.session() as s:
         done = s.get(Episode, ep_id)
     prov = json.loads(done.provenance)
-    assert prov["truncated_chars"] > 0, prov
-    assert prov["body_chars"] == inbox.max_chars
-    # sanity: what was dropped is what exceeded the cap
-    assert prov["truncated_chars"] == len(long_body.strip()) - inbox.max_chars
+    assert "truncated_chars" not in prov, prov
+    # the whole body reached the TTS, not the first 40k
+    assert len(captured["script"]) > 100_000, len(captured["script"])
+
+
+def test_source_that_opts_into_a_cap_still_truncates_and_records_it(monkeypatch):
+    from dataclasses import replace
+
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 4321, 90
+
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    capped = replace(next(s for s in config.sources if s.type == "inbox"),
+                     max_chars=5000)
+    long_body = "This is a sentence of the article. " * 3000
+    with db.session() as s:
+        ep = Episode(source_slug=capped.slug, guid="trunc-3", title="A capped read",
+                     link="", source_text=long_body)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, capped))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    prov = json.loads(done.provenance)
+    assert prov["body_chars"] == 5000
+    assert prov["truncated_chars"] == len(long_body.strip()) - 5000
 
 
 def test_short_article_records_no_truncation(monkeypatch):
