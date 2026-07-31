@@ -252,7 +252,7 @@ VERDICT_RE = re.compile(
 
 class _NotABook(Exception):
     """Raised when the LLM's leading VERDICT line says the reading-list
-    reference isn't a book (spec: the "arxiv sanity" / "ffmpeg assembly
+    reference isn't a book (spec: the "example web tool" / "example build
     instructions" bug — a website or CLI tool must not become a published
     dud episode). Carries the human-readable proposal text."""
 

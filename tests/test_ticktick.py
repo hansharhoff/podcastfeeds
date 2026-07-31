@@ -422,7 +422,7 @@ def test_book_brief_verdict_brief_strips_verdict_line(monkeypatch):
 
 
 def test_book_brief_not_a_book_verdict_creates_no_episode_and_proposes(monkeypatch):
-    """'arxiv sanity' / 'ffmpeg assembly instructions' bug: when the LLM says
+    """'example web tool' / 'example build guide' bug: when the LLM says
     honestly that a reading-list reference isn't a book, the pipeline must not
     turn that demurral into a published dud episode. Instead: no episode, item
     back to queued, and an actionable proposal in the queue."""
@@ -438,12 +438,12 @@ def test_book_brief_not_a_book_verdict_creates_no_episode_and_proposes(monkeypat
 
     monkeypatch.setattr(summarize, "llm", fake_llm)
     monkeypatch.setattr(ingest, "process_episode", boom)
-    item_id = _queue_item(kind="book", title="arxiv sanity", task_id="t-book-notabook-1")
+    item_id = _queue_item(kind="book", title="example web tool", task_id="t-book-notabook-1")
     config = load_config()
     inbox = next(s_ for s_ in config.sources if s_.type == "inbox")
     ep_id = ticktick._create_episode(inbox.slug, "ticktick:t-book-notabook-1",
-                                     "arxiv sanity", "")
-    _run(ticktick._render_book_brief(ep_id, item_id, inbox, "arxiv sanity", ""))
+                                     "example web tool", "")
+    _run(ticktick._render_book_brief(ep_id, item_id, inbox, "example web tool", ""))
     with db.session() as s:
         ep = s.get(Episode, ep_id)
         item = s.get(TickTickItem, item_id)
@@ -461,7 +461,7 @@ def test_retag_article_route_flips_kind():
     from app.config import get_token
     from app.web import api_ticktick_retag_article
 
-    item_id = _queue_item(kind="book", title="arxiv sanity", task_id="t-retag-1",
+    item_id = _queue_item(kind="book", title="example web tool", task_id="t-retag-1",
                           status="queued")
     with db.session() as s:
         item = s.get(TickTickItem, item_id)
@@ -564,7 +564,7 @@ def test_queue_rows_surfaces_proposal():
     it distinctly from a plain failure."""
     from app.web import _ticktick_queue_rows
 
-    item = TickTickItem(task_id="t-prop-1", project="Z Reading", title="arxiv sanity",
+    item = TickTickItem(task_id="t-prop-1", project="Z Reading", title="example web tool",
                         kind="book", status="queued", last_error="",
                         proposal="Not a book — looks like a website/tool. "
                                  "Suggested: retag as article and supply a URL.")
@@ -598,13 +598,13 @@ def test_redo_of_queue_episode_routes_through_generate_item(monkeypatch):
 
     with db.session() as s:
         ep = Episode(source_slug="inbox", guid="ticktick:redo-1",
-                     title="ffmpeg assembly instructions", link="")
+                     title="example build guide", link="")
         s.add(ep)
         s.commit()
         s.refresh(ep)
         ep_id = ep.id
         item = TickTickItem(task_id="redo-1", project="Z Reading",
-                            title="ffmpeg assembly instructions", kind="book",
+                            title="example build guide", kind="book",
                             status="generated", episode_id=ep_id)
         s.add(item)
         s.commit()
