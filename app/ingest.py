@@ -882,8 +882,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             # overwritten it with generated show notes (episode 32 incident).
             from .summarize import looks_meta
 
-            candidates = [c for c in (source_text, description)
-                          if len(c) > len(body) and not looks_meta(c)]
+            # Both fields can hold HTML (feed entries carry markup; show notes
+            # are built as HTML), and this fallback fed it straight to the TTS
+            # — eps 330/332 narrated "<p><strong>Source: Inbox</strong></p>"
+            # aloud, tags and all (2026-07-31).
+            candidates = [t for t in (strip_html(source_text), strip_html(description))
+                          if len(t) > len(body) and not looks_meta(t)]
             if candidates:
                 body = max(candidates, key=len)
         if len(body) < 40:
