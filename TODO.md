@@ -164,7 +164,7 @@ path; these are hardening, testability, and maintainability items.
       silently truncated. The 2026-07-25 fix chose defer-over-silent-truncation
       deliberately. Hans to confirm or revisit — no evidence it has bitten yet.
 - [ ] **Phase 3: non-article media in the TickTick queue.** A video playlist,
-      a slide deck and a marketing site sit in the queue classified as
+      a slide deck and a game's marketing site sit in the queue classified as
       `article` because they are non-PDF URLs. Generating them will fail
       visibly (the item stays queued with the error inline), which is the
       intended floor — but video/slide extraction was explicitly out of scope
