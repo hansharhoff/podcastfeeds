@@ -495,3 +495,81 @@ def test_fetch_pdf_text_blocks_non_public_addresses():
     # before making any network request (SSRF guard).
     with pytest.raises(RuntimeError, match="refusing to fetch non-public address"):
         _run_async(fetch_pdf_text("http://127.0.0.1:8000/document.pdf"))
+
+
+# ── footnotes (ep 310 feedback, 2026-08-01: "Try to handle footnotes
+#    correctly, inline and with an announcement like: 'footnote: ...' where the
+#    footnote is emphasized"). Substack puts a bare marker digit inline and the
+#    bodies in a block at the very end, so the voice read "…at an astonishing
+#    rate. One." and then recited orphaned sentences after the outro. ──
+
+_FN_BODY = (
+    '<p>Universities hired administrators at an astonishing rate.'
+    '<a class="footnote-anchor" data-component-name="FootnoteAnchorToDOM"'
+    ' id="footnote-anchor-1" href="#footnote-1" target="_self">1</a> </p>'
+    '<p>But replacing churches proved harder.'
+    '<a class="footnote-anchor" id="footnote-anchor-2" href="#footnote-2">2</a></p>'
+    '<div class="footnote" data-component-name="FootnoteToDOM">'
+    '<a id="footnote-1" href="#footnote-anchor-1" class="footnote-number">1</a>'
+    '<div class="footnote-content"><p>Administrator bloat is well documented.</p>'
+    "</div></div>"
+    '<div class="footnote" data-component-name="FootnoteToDOM">'
+    '<a id="footnote-2" href="#footnote-anchor-2" class="footnote-number">2</a>'
+    '<div class="footnote-content"><p>With, of course, the notable exception '
+    "of Black voters.</p></div></div>"
+)
+
+
+def test_footnote_body_follows_its_own_paragraph():
+    from app.extract import segments_from_clean_html
+    _, segments = segments_from_clean_html(_FN_BODY)
+    assert [s["type"] for s in segments] == [
+        "text", "footnote", "text", "footnote"], segments
+    assert segments[1]["text"] == "Administrator bloat is well documented."
+    assert segments[3]["text"].startswith("With, of course,")
+
+
+def test_footnote_marker_digit_is_not_spoken_in_the_sentence():
+    from app.extract import segments_from_clean_html
+    _, segments = segments_from_clean_html(_FN_BODY)
+    first = segments[0]["text"]
+    assert first == "Universities hired administrators at an astonishing rate."
+    assert not first.endswith("1")
+
+
+def test_footnote_bodies_do_not_also_appear_as_trailing_prose():
+    # The definition block used to survive as a bare text segment at the end.
+    from app.extract import segments_from_clean_html
+    _, segments = segments_from_clean_html(_FN_BODY)
+    texts = [s["text"] for s in segments if s["type"] == "text"]
+    assert not any("Administrator bloat" in t for t in texts)
+    assert not any("Black voters" in t for t in texts)
+
+
+def test_footnote_inside_a_list_item_is_kept():
+    from app.extract import segments_from_clean_html
+    html = (
+        "<ul><li>A point worth qualifying"
+        '<a class="footnote-anchor" href="#footnote-1">1</a></li></ul>'
+        '<div class="footnote"><a class="footnote-number">1</a>'
+        '<div class="footnote-content"><p>The qualification.</p></div></div>'
+    )
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text", "footnote"]
+    assert segments[0]["text"] == "A point worth qualifying"
+    assert segments[1]["text"] == "The qualification."
+
+
+def test_orphan_anchor_without_a_definition_is_still_stripped():
+    from app.extract import segments_from_clean_html
+    html = ('<p>A claim<a class="footnote-anchor" href="#footnote-9">9</a></p>')
+    _, segments = segments_from_clean_html(html)
+    assert [s["type"] for s in segments] == ["text"]
+    assert segments[0]["text"] == "A claim"
+
+
+def test_body_without_footnotes_is_unchanged():
+    from app.extract import segments_from_clean_html
+    _, segments = segments_from_clean_html("<p>Plain prose.</p><p>More prose.</p>")
+    assert [s["type"] for s in segments] == ["text", "text"]
+    assert [s["text"] for s in segments] == ["Plain prose.", "More prose."]

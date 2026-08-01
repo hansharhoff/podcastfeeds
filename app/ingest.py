@@ -503,6 +503,10 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
         elif seg["type"] == "quote":
             parts.append(f"<blockquote>{_html_escape(seg['text'])}</blockquote>")
             used += len(seg["text"])
+        elif seg["type"] == "footnote":
+            parts.append(
+                f"<p><small><em>Footnote: {_html_escape(seg['text'])}</em></small></p>")
+            used += len(seg["text"])
         elif seg["type"] == "image":
             cap = seg.get("caption") or seg.get("description") or ""
             figcap = f"<figcaption>{_html_escape(cap)}</figcaption>" if cap else ""
@@ -656,6 +660,18 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
         elif seg["type"] == "quote":
             flush()
             blocks.append({"voice": quote_voice, "text": scrub_light(seg["text"]), "chapter": None})
+            used += len(seg["text"])
+        elif seg["type"] == "footnote":
+            # Announced and read in the quote voice so it's audibly an aside
+            # rather than part of the sentence it hangs off (ep 310 feedback:
+            # "with an announcement like 'footnote: …' where the footnote is
+            # emphasized"). No chapter mark — an aside shouldn't fragment the
+            # chapter list.
+            flush()
+            note = scrub_light(seg["text"])
+            cue = "Fodnote: " if language == "da" else "Footnote: "
+            blocks.append({"voice": quote_voice, "text": f"{cue}{note}",
+                           "chapter": None})
             used += len(seg["text"])
         elif seg["type"] == "image" and len(images) < 8:
             flush()

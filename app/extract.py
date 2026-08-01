@@ -388,12 +388,76 @@ def _embed_segments(attrs: dict) -> list[dict]:
     return segments
 
 
+def _collect_footnotes(root) -> dict[str, str]:
+    """{anchor id -> footnote prose}, removing the definition blocks from the tree.
+
+    Substack renders the bodies in a block at the very END of the post:
+        <div class="footnote"><a class="footnote-number" href="#footnote-anchor-1">1</a>
+          <div class="footnote-content"><p>…</p></div></div>
+    Left alone they arrive as orphaned sentences after the outro, with nothing
+    saying they are footnotes (ep 310 feedback)."""
+    notes: dict[str, str] = {}
+    for block in list(root.iter("div")):
+        cls = block.get("class", "") or ""
+        if "footnote" not in cls.split() and cls != "footnote":
+            continue
+        number = ""
+        for a in block.iter("a"):
+            if "footnote-number" in (a.get("class", "") or ""):
+                number = (a.text_content() or "").strip()
+                break
+        content = ""
+        for div in block.iter("div"):
+            if "footnote-content" in (div.get("class", "") or ""):
+                content = " ".join(div.text_content().split())
+                break
+        if number and content:
+            notes[number] = content
+        parent = block.getparent()
+        if parent is not None:
+            tail = block.tail or ""
+            prev = block.getprevious()
+            if tail.strip():
+                if prev is not None:
+                    prev.tail = (prev.tail or "") + tail
+                else:
+                    parent.text = (parent.text or "") + tail
+            parent.remove(block)
+    return notes
+
+
+def _take_footnote_refs(el, notes: dict[str, str]) -> list[str]:
+    """Strip inline footnote anchors from `el`, returning the notes they point at.
+
+    The anchor's text is just the marker digit, so leaving it in place makes the
+    voice read "…at an astonishing rate. One." mid-paragraph (ep 310)."""
+    refs: list[str] = []
+    for a in list(el.iter("a")):
+        if "footnote-anchor" not in (a.get("class", "") or ""):
+            continue
+        marker = (a.text_content() or "").strip()
+        if marker in notes:
+            refs.append(notes[marker])
+        parent = a.getparent()
+        if parent is not None:
+            tail = a.tail or ""
+            prev = a.getprevious()
+            if tail:
+                if prev is not None:
+                    prev.tail = (prev.tail or "") + tail
+                else:
+                    parent.text = (parent.text or "") + tail
+            parent.remove(a)
+    return refs
+
+
 def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
     """Reading-order segments from ALREADY-CLEAN article HTML (Substack API
     body_html, DR article JSON, reader-proxy output) — a direct DOM walk that,
     unlike trafilatura, reliably keeps images and headings from a fragment.
 
-    Segment types: text | heading | quote | image (same shape as extract_segments).
+    Segment types: text | heading | quote | image | footnote (same shape as
+    extract_segments).
     """
     from lxml import html as lh
 
@@ -403,6 +467,9 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
         return "", []
     segments: list[dict] = []
     HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+    # Pull the definitions out first so the anchors below can resolve them and
+    # the block at the end of the post never surfaces as loose prose.
+    footnotes = _collect_footnotes(root)
 
     def is_image_block(el) -> bool:
         cls = el.get("class", "") or ""
@@ -437,6 +504,7 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
         # looked for text (ep 380). Blocks go back through handle_child, so a
         # list item gets exactly the same treatment as top-level content.
         for li in lst.iterchildren("li"):
+            refs = _take_footnote_refs(li, footnotes)
             parts = [li.text or ""]
             blocks = []
             for sub in li:
@@ -450,6 +518,8 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             t = " ".join(p.strip() for p in parts if p and p.strip())
             if t:
                 segments.append({"type": "text", "text": t})
+            for note in refs:
+                segments.append({"type": "footnote", "text": note})
             for sub in blocks:
                 handle_child(sub)
 
@@ -472,9 +542,16 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             emit_image(child)
         elif tag == "p":
             # A paragraph may embed an inline image (rare) — capture text then it.
+            # Footnote anchors come out first so their marker digit never ends
+            # up spoken inside the sentence; the note itself follows the
+            # paragraph, which is as close to "inline" as audio allows without
+            # interrupting a sentence mid-flow (ep 310).
+            refs = _take_footnote_refs(child, footnotes)
             t = child.text_content().strip()
             if t:
                 segments.append({"type": "text", "text": t})
+            for note in refs:
+                segments.append({"type": "footnote", "text": note})
             for img in child.iter("img"):
                 if img.get("src", "").startswith("http"):
                     segments.append({"type": "image", "src": img.get("src"), "caption": ""})
