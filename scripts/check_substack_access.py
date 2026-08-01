@@ -23,9 +23,16 @@ from app.substack import fetch_post  # noqa: E402
 # host, which fetch_post consults for every paid post — so a fetch_post probe
 # is the ground truth. Probing a pub without any sub reports a false
 # COOKIE-EXPIRED (2026-07-23 lesson: matthewyglesias was free_signup all along).
+# NOTE: this list is hardcoded on purpose — it is NOT derived from `paid: true`
+# in sources.yaml. Marking a source paid changes the pipeline's defer/preview
+# behaviour but does not enroll it here; add the probe by hand.
 PROBES = [
     ("phillipspobrien", "bravery-does-not-win-wars"),
     ("noahpinion", "americas-political-economy-is-pretty"),
+    # Slow Boring: removed 2026-07-23 as free_signup, re-added 2026-08-01 when
+    # Hans subscribed. Entitlement verified before adding — this post fetches
+    # at 3758/3711 words (audience=only_paid, accessible=True).
+    ("matthewyglesias", "mega-events-are-the-new-monoculture"),
 ]
 
 
