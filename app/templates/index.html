@@ -26,6 +26,25 @@
   details { margin: .3rem 0; border-bottom: 1px solid #8883; }
   summary { cursor: pointer; padding: .4rem 0; font-weight: 600; }
   summary:hover { opacity: .8; }
+  /* One chevron for every collapsible section, in place of the browser's
+     default disclosure triangle (which differs per engine). */
+  summary { list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary::before {
+    content: "\203A";           /* › — rotates to point down when open */
+    display: inline-block;
+    width: 1em;
+    opacity: .55;
+    font-weight: 700;
+    transition: transform .15s ease;
+  }
+  details[open] > summary::before { transform: rotate(90deg); }
+  @media (prefers-reduced-motion: reduce) {
+    summary::before { transition: none; }
+  }
+  /* Top-level sections read as headings; nested per-source ones stay smaller. */
+  details.section { margin-top: 1.5rem; }
+  details.section > summary { font-size: 1.1rem; }
 </style>
 </head>
 <body>
@@ -51,7 +70,8 @@
 </div>
 {% endif %}
 
-<h2>Share an article</h2>
+<details class="section" data-key="share" open>
+<summary>Share an article</summary>
 <form class="submit-form" method="post" action="/{{ token }}/api/submit">
   <input type="url" name="url" placeholder="https://… article URL" required>
   <label>Voice:
@@ -66,9 +86,10 @@
 <form method="post" action="/{{ token }}/api/poll">
   <button type="submit">Poll all sources now</button>
 </form>
+</details>
 
-<details data-key="feeds">
-<summary><strong>Feeds</strong> <small class="muted">— subscribe in your podcast app ({{ feeds|length }})</small></summary>
+<details class="section" data-key="feeds">
+<summary>Feeds <small class="muted">— subscribe in your podcast app ({{ feeds|length }})</small></summary>
 <table>
   {% for f in feeds %}
   <tr><td>{{ f.name }}</td><td class="feedurl">{{ f.url }}</td></tr>
@@ -76,8 +97,8 @@
 </table>
 </details>
 
-<details data-key="roster">
-<summary><strong>Voice roster</strong> <small class="muted">({{ (fixed_voices|length) + (roster|length) }} assignments)</small></summary>
+<details class="section" data-key="roster">
+<summary>Voice roster <small class="muted">({{ (fixed_voices|length) + (roster|length) }} assignments)</small></summary>
 <p><small class="muted">Each source/blogger keeps its assigned voice forever. Fixed voices come from <code>config/sources.yaml</code>.</small></p>
 <table>
   {% for slug, v in fixed_voices.items() %}
@@ -95,8 +116,8 @@
 {% endif %}
 </details>
 
-<details data-key="elevenlabs">
-<summary><strong>ElevenLabs voices</strong> <small class="muted">
+<details class="section" data-key="elevenlabs">
+<summary>ElevenLabs voices <small class="muted">
   {% if el.configured %}({{ (el.used/1000)|round(1) }}k / {{ (el.budget/1000)|round(0)|int }}k chars used this month · {{ (el.remaining/1000)|round(1) }}k left){% else %}(no API key set){% endif %}
 </small></summary>
 {% if el.configured %}
@@ -115,7 +136,8 @@
 {% endif %}
 </details>
 
-<h2>How to use</h2>
+<details class="section" data-key="howto">
+<summary>How to use</summary>
 <ul>
   <li><strong>Listen:</strong> subscribe to a feed URL above in Pocket Casts (Discover → paste URL in search). Subscribe to <em>either</em> "All feeds" <em>or</em> individual feeds — both gives duplicates.</li>
   <li><strong>Share an article from the phone:</strong> paste its URL in the form above, or install the <a href="https://http-shortcuts.rmy.ch/">HTTP Shortcuts</a> app and create a shortcut with method POST, URL <code>{{ base }}/{{ token }}/api/submit</code>, request body type <em>form parameters</em>, one parameter <code>url</code> = <code>&#123;&#123;share_text&#125;&#125;</code> (a "share text" variable), then enable "Allow sharing to this shortcut". Articles land in the Inbox feed a few minutes later.</li>
@@ -124,9 +146,11 @@
   <li><strong>Images:</strong> narration announces figures; the images appear in the episode show notes and as chapter art (tap the artwork / chapter list while playing).</li>
   <li><strong>Errors:</strong> failed episodes show a retry button in the list below. Logs: <code>docker compose logs -f</code>.</li>
 </ul>
+</details>
 
 {% if decisions %}
-<h2>⚠️ Needs your decision</h2>
+<details class="section" data-key="decisions" open>
+<summary>⚠️ Needs your decision <small class="muted">({{ decisions|length }})</small></summary>
 <p><small class="muted">Ready episodes that look unusually short — possibly a paywall stub or thin content. Keep it, or regenerate/flag it.</small></p>
 <table>
   {% for ep in decisions %}
@@ -142,10 +166,12 @@
   </tr>
   {% endfor %}
 </table>
+</details>
 {% endif %}
 
 {% if queue %}
-<h2>📥 TickTick queue</h2>
+<details class="section" data-key="queue" open>
+<summary>📥 TickTick queue <small class="muted">({{ queue|length }} item{{ 's' if queue|length != 1 }})</small></summary>
 <p><small class="muted">Articles, PDFs, and book references from your watched TickTick lists. Generate creates the episode now — the click is the approval.</small></p>
 <table>
   {% for row in queue %}{% set it = row.item %}
@@ -179,9 +205,11 @@
   </tr>
   {% endfor %}
 </table>
+</details>
 {% endif %}
 
-<h2>Recent episodes</h2>
+<details class="section" data-key="episodes" open>
+<summary>Recent episodes <small class="muted">({{ groups|length }} source{{ 's' if groups|length != 1 }})</small></summary>
 <p><small class="muted">Grouped by source, exactly as the pipeline groups them; skipped rows show what dedup/filtering/watermark removed. Click a source to expand. 👍/👎 stores feedback; ↻ regenerates with the latest pipeline.</small></p>
 {% for slug, g in groups.items() %}
 <details data-key="src:{{ slug }}" {% if g.episodes|length <= 4 %}open{% endif %}>
@@ -217,6 +245,7 @@
 </table>
 </details>
 {% endfor %}
+</details>
 
 <script>
 (function () {
