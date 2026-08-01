@@ -617,3 +617,28 @@ def test_short_article_records_no_truncation(monkeypatch):
         done = s.get(Episode, ep_id)
     prov = json.loads(done.provenance)
     assert "truncated_chars" not in prov
+
+
+# ── a multi-feed source logged only "a feed failed" with feedparser's whole
+#    result dict, so finding which of ai-releases' three feeds was serving
+#    malformed XML meant re-parsing all of them by hand (2026-08-01). ──
+
+def test_feed_error_reports_the_exception_not_the_dict():
+    from app.ingest import _feed_error
+
+    class _Parsed(dict):
+        pass
+
+    bozo = _Parsed({"bozo": True, "entries": [], "feed": {},
+                    "bozo_exception": ValueError("mismatched tag")})
+    assert _feed_error(bozo) == "ValueError: mismatched tag"
+
+
+def test_feed_error_handles_a_raised_exception():
+    from app.ingest import _feed_error
+    assert _feed_error(TimeoutError("timed out")) == "TimeoutError: timed out"
+
+
+def test_feed_error_falls_back_when_there_is_no_exception():
+    from app.ingest import _feed_error
+    assert _feed_error({"bozo": False, "entries": []}) == "no entries returned"

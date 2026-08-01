@@ -125,6 +125,21 @@ def _parse_feed_sync(url: str):
         socket.setdefaulttimeout(old)
 
 
+def _feed_error(parsed) -> str:
+    """The actual cause of a feed failure, not feedparser's whole result dict.
+
+    A failed parse logged as `{'bozo': True, 'entries': [], 'feed': {}, ...}`
+    buries the one useful field — the exception — behind everything else."""
+    if isinstance(parsed, Exception):
+        return f"{type(parsed).__name__}: {parsed}"
+    exc = None
+    if hasattr(parsed, "get"):
+        exc = parsed.get("bozo_exception")
+    if exc is not None:
+        return f"{type(exc).__name__}: {exc}"
+    return "no entries returned"
+
+
 async def _parse_feed(url: str):
     parsed = await asyncio.to_thread(_parse_feed_sync, url)
     # Transient upstream failures (hnrss 502s): one retry before giving up.
@@ -139,13 +154,18 @@ async def poll_rss_source(source: SourceDef) -> int:
     returns number of new episodes."""
     from .summarize import matches_criteria
 
+    urls = list(source.feed_urls())
     feeds = await asyncio.gather(
-        *(_parse_feed(u) for u in source.feed_urls()), return_exceptions=True
+        *(_parse_feed(u) for u in urls), return_exceptions=True
     )
     entries = []
-    for parsed in feeds:
+    for url, parsed in zip(urls, feeds, strict=True):
         if isinstance(parsed, Exception) or not getattr(parsed, "entries", None):
-            log.warning("feed poll %s: a feed failed: %s", source.slug, parsed)
+            # Name the URL: a multi-feed source (ai-releases has three) logged
+            # only "a feed failed", so identifying an intermittently-malformed
+            # feed meant re-parsing all of them by hand (2026-08-01).
+            log.warning("feed poll %s: feed failed [%s]: %s",
+                        source.slug, url, _feed_error(parsed))
             continue
         # Take enough for both generation and the "keep latest N available" set.
         entries.extend(parsed.entries[: max(source.max_items_per_poll * 4, source.keep_available + 2)])
@@ -1192,8 +1212,9 @@ async def _enrich_items(items: list[dict], min_summary: int = 120) -> None:
 async def build_digest(source: SourceDef) -> bool:
     """Build one digest episode from items newer than the last build,
     aggregated across all of the source's feed URLs."""
+    urls = list(source.feed_urls())
     feeds = await asyncio.gather(
-        *(_parse_feed(u) for u in source.feed_urls()), return_exceptions=True
+        *(_parse_feed(u) for u in urls), return_exceptions=True
     )
 
     with db.session() as s:
@@ -1205,9 +1226,10 @@ async def build_digest(source: SourceDef) -> bool:
     )
 
     candidates = []
-    for parsed in feeds:
+    for url, parsed in zip(urls, feeds, strict=True):
         if isinstance(parsed, Exception) or not getattr(parsed, "entries", None):
-            log.warning("digest %s: a feed failed: %s", source.slug, parsed)
+            log.warning("digest %s: feed failed [%s]: %s",
+                        source.slug, url, _feed_error(parsed))
             continue
         for entry in parsed.entries:
             published = entry.get("published_parsed") or entry.get("updated_parsed")
