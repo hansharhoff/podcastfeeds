@@ -642,3 +642,40 @@ def test_feed_error_handles_a_raised_exception():
 def test_feed_error_falls_back_when_there_is_no_exception():
     from app.ingest import _feed_error
     assert _feed_error({"bozo": False, "entries": []}) == "no entries returned"
+
+
+def _submitted_source(monkeypatch, url: str, **kwargs):
+    """Run submit_url with the async spawn stubbed out, returning the SourceDef
+    it would have processed the episode with."""
+    import app.ingest as ingest
+
+    seen = {}
+
+    async def noop(ep_id, source):
+        return None
+
+    def recording(ep_id, source):
+        seen["source"] = source
+        return noop(ep_id, source)
+
+    monkeypatch.setattr(ingest, "process_episode", recording)
+    monkeypatch.setattr(ingest, "spawn", lambda coro: coro.close())
+    _run(ingest.submit_url(url, **kwargs))
+    return seen["source"]
+
+
+def test_submit_url_allows_pdfs_from_a_deliberate_share(monkeypatch):
+    """A hand-shared URL is as deliberate as a TickTick generate click, which
+    already sets allow_pdf. Without it a shared PDF is skipped (ep. 403)."""
+    source = _submitted_source(monkeypatch, "https://example.com/paper.pdf",
+                               title="Paper")
+    assert source.allow_pdf is True
+    assert source.type == "inbox"
+
+
+def test_submit_url_language_override_still_applies(monkeypatch):
+    source = _submitted_source(monkeypatch, "https://example.com/dansk",
+                               language="da")
+    assert source.language == "da"
+    assert source.voice == ""
+    assert source.allow_pdf is True

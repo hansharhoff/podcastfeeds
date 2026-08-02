@@ -264,13 +264,34 @@ async def _fetch_via_proxy(url: str) -> str:
         return resp.text
 
 
+def _reflow_pdf_page(text: str) -> str:
+    """Rejoin a page whose text layer extracted one word per line.
+
+    pypdf emits a line per text run, so PDFs that store each word as its own
+    run come out as a column of single words — 49% of the lines in ep. 403's
+    Security Now transcript. That wrecks the show notes (one <p> per word) and
+    any paragraph-shaped logic downstream. Pages that extracted with sane line
+    structure are returned untouched.
+    """
+    lines = [ln.strip() for ln in text.splitlines()]
+    words = [ln for ln in lines if ln]
+    if not words:
+        return ""
+    singles = sum(1 for ln in words if " " not in ln)
+    if singles / len(words) < 0.3:
+        return text
+    return " ".join(words)
+
+
 def pdf_text(data: bytes) -> str:
     """Text content of a PDF, pages joined by blank lines. v1 of the queue's
     PDF path is text-only (spec §3) — figures/layout are not preserved."""
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages).strip()
+    pages = (_reflow_pdf_page(page.extract_text() or "") for page in reader.pages)
+    # PDF text layers are full of positional double-spacing ("Security  Now!").
+    return re.sub(r"[ \t]{2,}", " ", "\n\n".join(pages)).strip()
 
 
 async def fetch_pdf_text(url: str) -> str:
