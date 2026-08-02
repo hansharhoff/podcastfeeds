@@ -17,6 +17,7 @@ from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_vo
 from .db import Episode, utcnow
 from .extract import (
     detect_language,
+    dr_liveblog_html,
     extract_article,
     extract_og_image,
     extract_segments,
@@ -762,6 +763,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         html_text = ""
         paywalled = False
         fetch_issue = False
+        dr_liveblog = False
         followed_link = ""  # set below if a social post's outbound link was followed
         link_source = ""    # the social post `followed_link` came from
         link_follow = ""    # outcome string for provenance, set only for link-forwarding posts
@@ -812,6 +814,15 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     extracted_title, segments = extract_segments(html_text, fetch_url)
                     _, body = extract_article(html_text, fetch_url)
                     og_image = extract_og_image(html_text, fetch_url)
+                    # DR liveblogs hide every update behind a live-centre
+                    # iframe, so the generic pass above sees only the teaser
+                    # and page furniture. Rebuild the real posts from the
+                    # page's own JSON when they're there.
+                    liveblog = dr_liveblog_html(html_text)
+                    if liveblog:
+                        _, segments = segments_from_clean_html(liveblog)
+                        _, body = extract_article(liveblog, fetch_url)
+                        dr_liveblog = True
                     if not title or title == "Untitled":
                         title = extracted_title or title
                     # Link-forwarding social post (X/Bluesky/Mastodon/Threads):
@@ -1009,6 +1020,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             # monitoring that reads provenance (ep 239).
             prov["truncated_chars"] = dropped_chars
             prov["body_chars"] = source.max_chars
+        if dr_liveblog:
+            # Distinguishes a genuinely brief liveblog from one that lost its
+            # updates to the iframe again, for the shortness monitor.
+            prov["dr_liveblog"] = True
         if link_follow:
             # Set for every link-forwarding post (X/Bluesky/Mastodon/Threads),
             # whether or not a link was actually followed, so the admin UI

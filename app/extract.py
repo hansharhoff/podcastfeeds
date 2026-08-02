@@ -451,6 +451,104 @@ def _take_footnote_refs(el, notes: dict[str, str]) -> list[str]:
     return refs
 
 
+_DR_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
+)
+
+
+def _dr_post_body(fragment: str) -> str:
+    """One liveblog post's HTML, with DR's <ncpost-content> custom elements
+    resolved: BILDE becomes a plain <img> (so the image pipeline sees it),
+    everything else (embedded iframes, widgets) is dropped."""
+    from lxml import html as lh
+
+    try:
+        root = lh.fromstring(f"<div>{fragment}</div>")
+    except Exception:
+        return ""
+    for el in root.iter("ncpost-content"):
+        parent = el.getparent()
+        if parent is None:
+            continue
+        src = el.get("data-src", "")
+        if el.get("data-type") == "BILDE" and src.startswith("http"):
+            # A <figure>/<figcaption> pair, because that is the shape
+            # segments_from_clean_html reads captions out of — a bare <img>
+            # with an alt attribute arrives caption-less.
+            fig = lh.Element("figure")
+            img = lh.Element("img")
+            img.set("src", src)
+            fig.append(img)
+            caption = (el.get("data-caption") or "").strip()
+            if caption:
+                img.set("alt", caption)
+                cap = lh.Element("figcaption")
+                cap.text = caption
+                fig.append(cap)
+            parent.replace(el, fig)
+        else:
+            parent.remove(el)
+    return "".join(
+        lh.tostring(child, encoding="unicode") for child in root
+    )
+
+
+def dr_liveblog_html(html_text: str) -> str:
+    """Clean article HTML for a dr.dk liveblog page, or "" if it isn't one.
+
+    DR renders a liveblog as a two-sentence teaser plus an embedded live-centre
+    iframe, so the generic extractor finds no real body and falls back to page
+    furniture — every actual update goes missing and the episode is ~40s of
+    navigation text (eps. 323, 381, 402). The updates are in the page's own
+    __NEXT_DATA__ under article.liveBlog.items, newest first, each with a title
+    and an HTML body; this rebuilds them as ordinary article HTML.
+    """
+    m = _DR_NEXT_DATA_RE.search(html_text)
+    if not m:
+        return ""
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    article = ((data.get("props") or {}).get("pageProps") or {}).get(
+        "viewProps", {}
+    ).get("article") if isinstance(data, dict) else None
+    if not isinstance(article, dict):
+        return ""
+    items = (article.get("liveBlog") or {}).get("items")
+    if not isinstance(items, list) or not items:
+        return ""
+
+    parts: list[str] = []
+    # The teaser still sets up the story, so keep it ahead of the updates.
+    for comp in article.get("body") or []:
+        if not isinstance(comp, dict) or comp.get("type") != "ParagraphComponent":
+            continue
+        text = " ".join(
+            b.get("text", "") for b in comp.get("body") or []
+            if isinstance(b, dict) and b.get("type") == "Text"
+        ).strip()
+        if text:
+            parts.append(f"<p>{html.escape(text)}</p>")
+
+    kept = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        body = _dr_post_body(item.get("content") or "")
+        title = (item.get("title") or "").strip()
+        if not body and not title:
+            continue
+        if title:
+            parts.append(f"<h2>{html.escape(title)}</h2>")
+        parts.append(body)
+        kept += 1
+    if not kept:
+        return ""
+    log.info("dr liveblog: rebuilt %d update(s) from __NEXT_DATA__", kept)
+    return "".join(parts)
+
+
 def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
     """Reading-order segments from ALREADY-CLEAN article HTML (Substack API
     body_html, DR article JSON, reader-proxy output) — a direct DOM walk that,

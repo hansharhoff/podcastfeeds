@@ -573,3 +573,98 @@ def test_body_without_footnotes_is_unchanged():
     _, segments = segments_from_clean_html("<p>Plain prose.</p><p>More prose.</p>")
     assert [s["type"] for s in segments] == ["text", "text"]
     assert [s["text"] for s in segments] == ["Plain prose.", "More prose."]
+
+
+# ── DR liveblogs ──────────────────────────────────────────────────────────
+# DR renders a liveblog as a teaser plus a live-centre iframe; the real posts
+# only exist in the page's __NEXT_DATA__. Shape mirrors the live markup fetched
+# on 2026-08-02 (/nyheder/udland/live-naturbrande-i-europa).
+
+def _dr_page(article: dict) -> str:
+    import json
+    return (
+        '<html><body><script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"props": {"pageProps": {"viewProps": {"article": article}}}})
+        + "</script></body></html>"
+    )
+
+
+_DR_TEASER = [{
+    "type": "ParagraphComponent",
+    "body": [{"type": "Text", "text": "Sydeuropa er ramt af flere store naturbrande."}],
+}]
+
+
+def test_dr_liveblog_rebuilds_updates_as_article_html():
+    from app.extract import dr_liveblog_html, segments_from_clean_html
+    page = _dr_page({
+        "body": _DR_TEASER,
+        "liveBlog": {"items": [
+            {"title": "To besætningsmedlemmer er døde",
+             "content": "<p>To af de fire er døde.</p><p>Det oplyser brandvæsenet.</p>"},
+            {"title": "Begge helikoptere er lokaliseret",
+             "content": "<p>Redningsstyrker har fundet dem.</p>"},
+        ]},
+    })
+    _, segments = segments_from_clean_html(dr_liveblog_html(page))
+    assert [s["type"] for s in segments] == [
+        "text", "heading", "text", "text", "heading", "text",
+    ]
+    # teaser first, then each update under its own chapter heading, newest first
+    assert segments[0]["text"] == "Sydeuropa er ramt af flere store naturbrande."
+    assert segments[1]["text"] == "To besætningsmedlemmer er døde"
+    assert segments[4]["text"] == "Begge helikoptere er lokaliseret"
+
+
+def test_dr_liveblog_bilde_becomes_a_captioned_image():
+    from app.extract import dr_liveblog_html, segments_from_clean_html
+    page = _dr_page({
+        "body": [],
+        "liveBlog": {"items": [{
+            "title": "Dansker blandt de omkomne",
+            "content": (
+                '<ncpost-content data-type="BILDE"'
+                ' data-src="https://img.example/lc-img-1.jpeg"'
+                ' data-caption="Det er uklart, hvad der førte til kollisionen."'
+                ' data-source="AFP/Ritzau Scanpix"></ncpost-content>'
+                "<p>Brandvæsenet har oplyst nationaliteterne.</p>"
+            ),
+        }]},
+    })
+    _, segments = segments_from_clean_html(dr_liveblog_html(page))
+    images = [s for s in segments if s["type"] == "image"]
+    assert len(images) == 1
+    assert images[0]["src"] == "https://img.example/lc-img-1.jpeg"
+    assert images[0]["caption"] == "Det er uklart, hvad der førte til kollisionen."
+
+
+def test_dr_liveblog_drops_embedded_widgets():
+    from app.extract import dr_liveblog_html
+    page = _dr_page({
+        "body": [],
+        "liveBlog": {"items": [{
+            "title": "En opdatering",
+            "content": (
+                "<p>Rigtig tekst.</p>"
+                '<ncpost-content data-type="DRDKMIDAS"'
+                ' data-html="&lt;html&gt;&lt;body&gt;iframe-skrald&lt;/body&gt;&lt;/html&gt;">'
+                "</ncpost-content>"
+            ),
+        }]},
+    })
+    out = dr_liveblog_html(page)
+    assert "Rigtig tekst." in out
+    assert "ncpost" not in out
+    assert "iframe-skrald" not in out
+
+
+def test_dr_liveblog_ignores_pages_that_are_not_liveblogs():
+    from app.extract import dr_liveblog_html
+    # a normal DR article: __NEXT_DATA__ present, but no liveBlog items
+    assert dr_liveblog_html(_dr_page({"body": _DR_TEASER})) == ""
+    assert dr_liveblog_html(_dr_page({"body": [], "liveBlog": {"items": []}})) == ""
+    # non-DR pages and malformed JSON must never hijack the generic path
+    assert dr_liveblog_html("<html><p>An ordinary article.</p></html>") == ""
+    assert dr_liveblog_html(
+        '<script id="__NEXT_DATA__" type="application/json">{not json</script>'
+    ) == ""
