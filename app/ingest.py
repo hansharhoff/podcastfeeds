@@ -1336,6 +1336,14 @@ async def submit_url(url: str, title: str = "", language: str = "auto") -> int:
     """Create an inbox episode for a shared URL; processing happens async."""
     config = load_config()
     inbox = next(s for s in config.sources if s.type == "inbox")
+    # Sharing a URL by hand is as deliberate as clicking generate on a queued
+    # TickTick item, which already sets allow_pdf — the flag is there to stop
+    # RSS feeds auto-narrating PDFs, not to block a deliberate share. Without
+    # this a shared PDF is skipped outright (ep. 403, a Security Now transcript).
+    overrides: dict = {"allow_pdf": True}
+    if language in ("da", "en"):
+        overrides |= {"language": language, "voice": ""}
+    inbox = SourceDef(**{**inbox.__dict__, **overrides})
     with db.session() as s:
         existing = s.exec(
             select(Episode).where(
@@ -1363,8 +1371,6 @@ async def submit_url(url: str, title: str = "", language: str = "auto") -> int:
             return dup.id if dup else 0
         s.refresh(ep)
         ep_id = ep.id
-    if language in ("da", "en"):
-        inbox = SourceDef(**{**inbox.__dict__, "language": language, "voice": ""})
     spawn(process_episode(ep_id, inbox))
     return ep_id
 

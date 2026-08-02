@@ -668,3 +668,37 @@ def test_dr_liveblog_ignores_pages_that_are_not_liveblogs():
     assert dr_liveblog_html(
         '<script id="__NEXT_DATA__" type="application/json">{not json</script>'
     ) == ""
+
+
+# ── PDF text layers ───────────────────────────────────────────────────────
+
+def test_reflow_pdf_page_rejoins_one_word_per_line_extractions():
+    from app.extract import _reflow_pdf_page
+    # pypdf emits a line per text run; some PDFs store every word separately
+    page = "\n".join(["Listeners", "may", "have", "grown", "tired", "of", "this."])
+    assert _reflow_pdf_page(page) == "Listeners may have grown tired of this."
+
+
+def test_reflow_pdf_page_leaves_well_formed_pages_alone():
+    from app.extract import _reflow_pdf_page
+    page = (
+        "Security Now! Special Edition\n"
+        "It appears feasible to selectively sequester knowledge within an LLM.\n"
+        "We explore a new method with collaborators at AE Studio.\n"
+    )
+    assert _reflow_pdf_page(page) == page
+
+
+def test_reflow_pdf_page_handles_empty_and_blank_pages():
+    from app.extract import _reflow_pdf_page
+    assert _reflow_pdf_page("") == ""
+    assert _reflow_pdf_page("\n\n  \n") == ""
+
+
+def test_pdf_text_collapses_positional_double_spacing():
+    import re
+
+    from app.extract import _reflow_pdf_page
+    # the whitespace pass pdf_text applies over the joined pages
+    collapsed = re.sub(r"[ \t]{2,}", " ", _reflow_pdf_page("Security  Now!  Special"))
+    assert collapsed == "Security Now! Special"
