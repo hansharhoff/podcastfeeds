@@ -49,7 +49,7 @@ def _split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
 EDGE_FALLBACK_VOICE = "en-US-AndrewNeural"
 
 
-async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 6) -> None:
+async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11) -> None:
     # ElevenLabs voices are encoded as "eleven:<voice_id>". Budget was already
     # checked at episode level; if a call fails here, fall back to edge-tts so
     # the episode still completes.
@@ -71,11 +71,17 @@ async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 6)
         except Exception as exc:
             if attempt == attempts:
                 raise
-            # edge-tts returns NoAudioReceived under Microsoft-side throttling;
-            # back off and retry (sustained throttling needs several attempts).
-            log.warning("edge-tts chunk failed (attempt %d/%d): %s; backing off",
-                        attempt, attempts, exc)
-            await asyncio.sleep(min(3 * attempt, 20))
+            # edge-tts returns NoAudioReceived under Microsoft-side throttling.
+            # A long episode is hundreds of back-to-back requests, so after a
+            # run of them the throttle can outlast a short retry budget: ep.
+            # 299 (13k words, rendered straight after four other interviews)
+            # burned all six attempts inside 45s twice and lost the whole
+            # episode. Waiting minutes is far cheaper than re-synthesising
+            # everything, so back off further and for longer.
+            delay = min(5 * attempt, 60)
+            log.warning("edge-tts chunk failed (attempt %d/%d): %s; retrying in %ds",
+                        attempt, attempts, exc, delay)
+            await asyncio.sleep(delay)
 
 
 async def _concat_mp3s(parts: list[Path], out_path: Path) -> None:
