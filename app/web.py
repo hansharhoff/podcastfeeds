@@ -90,6 +90,12 @@ def _requeue(episode_id: int, digest_error: str | None = None) -> None:
         if digest_error and ep.guid.startswith("digest:"):
             raise HTTPException(status_code=400, detail=digest_error)
         source = _source_for(config, ep)
+        # Clicking unskip/redo on a specific episode is an explicit per-episode
+        # approval, so a PDF narrates instead of being skipped straight back:
+        # allow_pdf exists to stop feeds auto-narrating PDFs they happen to
+        # link, not to veto a deliberate request. Without this, unskipping
+        # ep. 403 (a PDF shared by hand) just re-skips it.
+        source = SourceDef(**{**source.__dict__, "allow_pdf": True})
         ep.status = "pending"
         ep.error = ""
         s.add(ep)

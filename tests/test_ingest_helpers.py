@@ -679,3 +679,35 @@ def test_submit_url_language_override_still_applies(monkeypatch):
     assert source.language == "da"
     assert source.voice == ""
     assert source.allow_pdf is True
+
+
+def test_requeue_approves_pdfs_for_the_episode_it_requeues(monkeypatch):
+    """Unskip/redo is an explicit per-episode approval, so a PDF episode must
+    not be skipped straight back by the allow_pdf guard (ep. 403)."""
+    from app import db as _db
+    from app import web
+
+    seen = {}
+
+    def _noop():
+        async def inner():
+            return None
+        return inner()
+
+    monkeypatch.setattr(web, "spawn", lambda coro: coro.close())
+    monkeypatch.setattr(web, "process_episode",
+                        lambda ep_id, source: seen.update(source=source) or _noop())
+
+    with _db.session() as s:
+        ep = _db.Episode(source_slug="ai-releases", guid="g-pdf-requeue",
+                         title="A paper", link="https://example.com/paper.pdf",
+                         status="skipped", error="PDF source — not narratable")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    web._requeue(ep_id)
+    assert seen["source"].allow_pdf is True
+    with _db.session() as s:
+        assert s.get(_db.Episode, ep_id).status == "pending"
