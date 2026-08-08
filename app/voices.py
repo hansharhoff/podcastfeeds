@@ -151,6 +151,27 @@ ACCENTS = ("US", "GB", "CA", "AU", "IE", "NZ", "ZA", "IN",
 # in an American accent. Only the child voice is off-limits outright.
 NOT_AUTO_ASSIGNED = frozenset({"en-US-AnaNeural"})
 
+# The image describer is the app's own narrator, not the publication's: the
+# same voice explaining a screenshot in every episode whatever the source
+# (Hans, 2026-08-08). It was previously drawn per source ("{slug}#images"), so
+# the describer changed identity between feeds. Kept OUT of VOICE_POOLS so no
+# source's quote or question voice can collide with it inside an episode.
+#
+# Danish has only two voices, both needed for narration, so the Danish
+# describer necessarily doubles as some sources' quote voice.
+DESCRIBER_VOICES: dict[str, str] = {
+    "en": "en-GB-LibbyNeural",       # calm British female — distinct from the
+                                     # mostly-American narrators and from the
+                                     # "view from Denmark" closer (Aria)
+    "da": "da-DK-ChristelNeural",
+}
+
+
+def describer_voice(language: str) -> str:
+    """The one voice that reads image descriptions, in every episode."""
+    return DESCRIBER_VOICES.get(language, DESCRIBER_VOICES["en"])
+
+
 ROSTER_PREFIX = "voice:"
 PROFILE_PREFIX = "speaker-profile:"
 
