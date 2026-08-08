@@ -48,7 +48,7 @@ from .summarize import (
 )
 from .tasks import spawn
 from .tts import synthesize, synthesize_blocks
-from .voices import assign_voice, warm_speaker_voices
+from .voices import assign_voice, describer_voice, warm_speaker_voices
 
 log = logging.getLogger("podcastfeeds")
 
@@ -1123,17 +1123,17 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     named, language, frozenset({voice, quote_voice}),
                     context=f"from {source.name}, titled {title!r}")
 
-            describer_voice = pick_voice(
-                SourceDef(**{**source.__dict__, "voice": ""}),
-                language, f"{roster_key}#images",
-            )
+            # One describer across every source — it is the app's own voice
+            # rather than the publication's, so it should not change identity
+            # between feeds (Hans, 2026-08-08).
+            image_voice = describer_voice(language)
             # Distinct voice for reader-mailbag questions (only used if mark_qa fired).
             question_voice = pick_voice(
                 SourceDef(**{**source.__dict__, "voice": ""}),
                 language, f"{roster_key}#questions",
             )
             blocks, images = _build_blocks(
-                title, intro, segments, voice, quote_voice, describer_voice,
+                title, intro, segments, voice, quote_voice, image_voice,
                 language, source.max_chars, images_meta, speaker_voice,
                 source_label=source_label, question_voice=question_voice,
             )
@@ -1165,7 +1165,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             prov.update({
                 "path": "structured",
                 "voices": {"main": voice, "quote": quote_voice,
-                           "images": describer_voice},
+                           "images": image_voice},
                 "images": len(images),
                 "conversations": sum(
                     1 for m in images_meta.values()

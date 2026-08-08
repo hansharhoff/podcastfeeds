@@ -155,3 +155,34 @@ def test_warm_speaker_voices_leaves_an_established_speaker_alone(monkeypatch):
     monkeypatch.setattr(summarize, "llm", fake_llm)
     _run(voices.warm_speaker_voices({"speaker:established": "Someone"}, "en"))
     assert voices.get_roster()["speaker:established"] == "en-US-JennyNeural"
+
+
+# ── the image describer is the app's own voice, not the publication's ─────
+
+def test_describer_voice_is_the_same_for_every_source():
+    from app.voices import describer_voice
+    assert describer_voice("en") == describer_voice("en")
+    assert describer_voice("da") == describer_voice("da")
+    # unknown languages still get a voice rather than blowing up
+    assert describer_voice("de") == describer_voice("en")
+
+
+def test_describer_voice_is_language_appropriate():
+    from app.voices import VOICE_CATALOG, describer_voice
+    assert describer_voice("en").startswith("en-")
+    assert describer_voice("da").startswith("da-")
+    assert describer_voice("en") in VOICE_CATALOG
+
+
+def test_english_describer_is_reserved_from_the_contrast_pool():
+    """Otherwise a source's quote or question voice could be handed the
+    describer's voice and the two would collide inside one episode."""
+    from app.voices import VOICE_POOLS, describer_voice
+    assert describer_voice("en") not in VOICE_POOLS["en"]
+
+
+def test_describer_differs_from_the_view_from_denmark_closer():
+    """Both are app-owned segments; hearing them in one voice would merge two
+    different kinds of interjection."""
+    from app.voices import CURATED, describer_voice
+    assert describer_voice("en") != CURATED.get("danish-perspective:en", "en-US-AriaNeural")
