@@ -230,8 +230,9 @@ def test_process_episode_narrates_pdf_when_allowed(monkeypatch):
     from app import ingest
     from app.db import Episode
 
-    async def fake_fetch_pdf_text(url):
-        return "Deep learning content. " * 40  # >400 chars -> summary branch
+    async def fake_fetch_pdf(url):
+        # (title, text); >400 chars -> summary branch
+        return "Doc Title", "Deep learning content. " * 40
 
     async def fake_article_summary(title, body, language, link):
         return "A short spoken summary.", "notes line", {"generator": "test"}
@@ -239,7 +240,7 @@ def test_process_episode_narrates_pdf_when_allowed(monkeypatch):
     async def fake_synthesize(script, **kwargs):
         return "out.mp3", 12345, 60
 
-    monkeypatch.setattr(ingest, "fetch_pdf_text", fake_fetch_pdf_text)
+    monkeypatch.setattr(ingest, "fetch_pdf", fake_fetch_pdf)
     monkeypatch.setattr(ingest, "article_summary", fake_article_summary)
     monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
 
@@ -261,6 +262,48 @@ def test_process_episode_narrates_pdf_when_allowed(monkeypatch):
         done = s.get(Episode, ep_id)
     assert done.status == "ready"
     assert "summary" in done.provenance
+    # the PDF's own title is a fallback, not an override
+    assert "A paper" in done.title
+
+
+def test_process_episode_uses_the_pdf_title_when_the_share_had_none(monkeypatch):
+    """A PDF shared by hand carries no page title, so the episode used to stay
+    "Untitled" and the narration opened by saying so (ep. 403)."""
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_fetch_pdf(url):
+        return "Security Now! Special Edition - GRAM", "Deep learning content. " * 40
+
+    async def fake_article_summary(title, body, language, link):
+        return "A short spoken summary.", "notes line", {"generator": "test"}
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 12345, 60
+
+    monkeypatch.setattr(ingest, "fetch_pdf", fake_fetch_pdf)
+    monkeypatch.setattr(ingest, "article_summary", fake_article_summary)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="https://example.com/untitled.pdf",
+                     title="Untitled", link="https://example.com/untitled.pdf")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    source = SourceDef(**{**inbox.__dict__, "allow_pdf": True,
+                          "narrate_mode": "summary", "voice": ""})
+    _run(ingest.process_episode(ep_id, source))
+
+    with db.session() as s:
+        done = s.get(Episode, ep_id)
+    assert done.status == "ready"
+    assert "Security Now! Special Edition - GRAM" in done.title
+    assert "Untitled" not in done.title
 
 
 def test_process_episode_still_skips_pdf_without_allow_pdf():

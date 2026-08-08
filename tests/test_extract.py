@@ -448,8 +448,9 @@ def test_resolve_short_link_blocks_non_public_targets_without_fetching():
     assert _run_async(resolve_short_link(blocked)) == blocked
 
 
-def _mini_pdf(text: str) -> bytes:
-    """A minimal valid one-page PDF containing `text` (ASCII only)."""
+def _mini_pdf(text: str, title: str | None = None) -> bytes:
+    """A minimal valid one-page PDF containing `text` (ASCII only), optionally
+    carrying a /Title in its document info dictionary."""
     stream = f"BT /F1 12 Tf 72 712 Td ({text}) Tj ET".encode()
     bodies = [
         b"<</Type/Catalog/Pages 2 0 R>>",
@@ -459,6 +460,8 @@ def _mini_pdf(text: str) -> bytes:
         b"<</Length %d>>\nstream\n%s\nendstream" % (len(stream), stream),
         b"<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
     ]
+    if title is not None:
+        bodies.append(b"<</Title(%s)>>" % title.encode())
     out = bytearray(b"%PDF-1.4\n")
     offsets = []
     for i, body in enumerate(bodies, start=1):
@@ -468,8 +471,9 @@ def _mini_pdf(text: str) -> bytes:
     out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(bodies) + 1)
     for off in offsets:
         out += b"%010d 00000 n \n" % off
-    out += b"trailer\n<</Size %d/Root 1 0 R>>\nstartxref\n%d\n%%%%EOF" % (
-        len(bodies) + 1, xref_at)
+    info = b"/Info %d 0 R" % len(bodies) if title is not None else b""
+    out += b"trailer\n<</Size %d/Root 1 0 R%s>>\nstartxref\n%d\n%%%%EOF" % (
+        len(bodies) + 1, info, xref_at)
     return bytes(out)
 
 
@@ -702,3 +706,29 @@ def test_pdf_text_collapses_positional_double_spacing():
     # the whitespace pass pdf_text applies over the joined pages
     collapsed = re.sub(r"[ \t]{2,}", " ", _reflow_pdf_page("Security  Now!  Special"))
     assert collapsed == "Security Now! Special"
+
+
+def test_pdf_title_prefers_document_metadata():
+    from app.extract import pdf_title
+    data = _mini_pdf("Body text.", title="Security Now! Special Edition - GRAM")
+    assert pdf_title(data, "https://grc.com/sn/SN-Special.pdf") == \
+        "Security Now! Special Edition - GRAM"
+
+
+def test_pdf_title_falls_back_to_the_filename():
+    from app.extract import pdf_title
+    data = _mini_pdf("Body text.")  # no /Title
+    assert pdf_title(data, "https://grc.com/sn/SN-Special-08-01-26.pdf") == \
+        "SN-Special-08-01-26"
+
+
+def test_pdf_title_ignores_placeholder_metadata_titles():
+    from app.extract import pdf_title
+    for junk in ("Untitled document", "tmp9f2a.pdf"):
+        data = _mini_pdf("Body text.", title=junk)
+        assert pdf_title(data, "https://x.test/real-name.pdf") == "real-name"
+
+
+def test_pdf_title_without_metadata_or_url_is_empty():
+    from app.extract import pdf_title
+    assert pdf_title(_mini_pdf("Body."), "") == ""
