@@ -1002,6 +1002,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         seg_chars = sum(len(s_.get("text", "")) for s_ in segments)
         images: list[dict] = []
         source_label = _source_label(source, link)
+        # A redo re-reads ep.title, which already carries the source label (and
+        # possibly a [Preview] marker) from the previous render. Strip them
+        # before they are re-applied below, or each regeneration stacks another
+        # copy — ep. 403 came back as "grc.com: grc.com: Untitled". RSS sources
+        # hid this because their title is refreshed from the feed every time.
+        title = title.removeprefix("[Preview] ").removeprefix(f"{source_label}: ")
         intro = _episode_intro(title, source.name, language, preview=is_preview,
                                fetch_issue=fetch_issue)
         # Outro: previews get an explicit "that was the free preview" sign-off.
