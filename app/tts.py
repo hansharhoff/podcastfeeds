@@ -48,6 +48,17 @@ def _split_text(text: str, limit: int = CHUNK_CHARS) -> list[str]:
 
 EDGE_FALLBACK_VOICE = "en-US-AndrewNeural"
 
+# A chunk with no letter or digit has nothing to say, and edge-tts answers
+# NoAudioReceived rather than returning silence — which retries cannot fix.
+# Ep. 299 (45 minutes) failed three times over an hour on a single two-character
+# chunk, the leftover "~~" of a markdown strikethrough.
+_SPEAKABLE = re.compile(r"[^\W_]", re.UNICODE)
+
+
+def has_speech(text: str) -> bool:
+    """Whether this text contains anything a voice could actually pronounce."""
+    return bool(_SPEAKABLE.search(text))
+
 
 async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11) -> None:
     # ElevenLabs voices are encoded as "eleven:<voice_id>". Budget was already
@@ -71,16 +82,25 @@ async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11
         except Exception as exc:
             if attempt == attempts:
                 raise
-            # edge-tts returns NoAudioReceived under Microsoft-side throttling.
-            # A long episode is hundreds of back-to-back requests, so after a
-            # run of them the throttle can outlast a short retry budget: ep.
-            # 299 (13k words, rendered straight after four other interviews)
-            # burned all six attempts inside 45s twice and lost the whole
-            # episode. Waiting minutes is far cheaper than re-synthesising
-            # everything, so back off further and for longer.
+            # edge-tts returns NoAudioReceived under Microsoft-side throttling,
+            # where a long episode's hundreds of back-to-back requests can
+            # outlast a short retry budget — hence minutes of patience rather
+            # than the original 45 seconds, since waiting costs far less than
+            # re-synthesising a whole episode.
+            #
+            # Retrying only helps when the cause is transient, though: the same
+            # exception is raised for a chunk with nothing to pronounce, and
+            # that fails identically every time (ep. 299, a stray "~~"). Those
+            # are filtered by has_speech() before they get here.
             delay = min(5 * attempt, 60)
-            log.warning("edge-tts chunk failed (attempt %d/%d): %s; retrying in %ds",
-                        attempt, attempts, exc, delay)
+            # Name the voice and the text: ep. 299 failed identically eleven
+            # times and the log said only "chunk failed", so finding the
+            # offending chunk meant replaying the whole episode by hand.
+            log.warning(
+                "edge-tts chunk failed (attempt %d/%d) [voice=%s, %d chars]: %s; "
+                "retrying in %ds — text starts: %r",
+                attempt, attempts, voice, len(text), exc, delay, text[:120],
+            )
             await asyncio.sleep(delay)
 
 
@@ -165,6 +185,12 @@ async def synthesize_blocks(
             if b.get("chapter"):
                 chapters.append((offset, b["chapter"]))
             for chunk in _split_text(text):
+                if not has_speech(chunk):
+                    # Punctuation-only leftovers (stray "~~", "---", bullets)
+                    # would fail the whole episode; there is nothing to lose by
+                    # dropping them.
+                    log.info("skipping unspeakable chunk: %r", chunk[:40])
+                    continue
                 part = Path(tmp) / f"part{len(parts):05d}.mp3"
                 await _synth_chunk(chunk, b["voice"], part)
                 parts.append(part)

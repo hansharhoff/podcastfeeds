@@ -170,7 +170,7 @@ def scrub_light(text: str) -> str:
     text = linearize_markdown_tables(text)           # pipe tables -> spoken prose
     text = _MD_LINK_RE.sub(r"\1", text)              # [text](url) -> text
     text = _URL_RE.sub(_spoken_domain, text)         # bare URLs -> domain or gone
-    text = re.sub(r"[*_`#]+", "", text)              # markdown emphasis/headers
+    text = re.sub(r"[*_`#~]+", "", text)             # markdown emphasis/headers/strike
     text = _FOOTNOTE_RE.sub("", text)                # inline footnote markers [1] -> gone
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
