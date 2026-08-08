@@ -670,3 +670,52 @@ def test_redo_of_ordinary_episode_does_not_touch_the_queue(monkeypatch):
         ep_id = ep.id
 
     assert web._regenerate_from_queue(ep_id) is None
+
+
+def test_redo_does_not_stack_the_source_label_on_the_title(monkeypatch):
+    """A redo re-reads ep.title, which already carries the label; without the
+    strip it stacked ("grc.com: grc.com: Untitled", ep. 403)."""
+    from app import ingest
+    from app.db import Episode
+
+    async def fake_fetch_pdf(url):
+        return "", "Deep learning content. " * 40
+
+    async def fake_article_summary(title, body, language, link):
+        return "A short spoken summary.", "notes line", {"generator": "test"}
+
+    async def fake_synthesize(script, **kwargs):
+        return "out.mp3", 12345, 60
+
+    monkeypatch.setattr(ingest, "fetch_pdf", fake_fetch_pdf)
+    monkeypatch.setattr(ingest, "article_summary", fake_article_summary)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+
+    config = load_config()
+    inbox = next(s for s in config.sources if s.type == "inbox")
+    source = SourceDef(**{**inbox.__dict__, "allow_pdf": True,
+                          "narrate_mode": "summary", "voice": ""})
+    with db.session() as s:
+        ep = Episode(source_slug=inbox.slug, guid="https://grc.com/restack.pdf",
+                     title="A Paper", link="https://grc.com/restack.pdf")
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+
+    _run(ingest.process_episode(ep_id, source))
+    with db.session() as s:
+        first = s.get(Episode, ep_id).title
+
+    # redo: the row now holds the labelled title, exactly as api_redo re-reads it
+    with db.session() as s:
+        ep = s.get(Episode, ep_id)
+        ep.status = "pending"
+        s.add(ep)
+        s.commit()
+    _run(ingest.process_episode(ep_id, source))
+    with db.session() as s:
+        second = s.get(Episode, ep_id).title
+
+    assert first == second
+    assert second.count("grc.com") == 1
