@@ -186,3 +186,4 @@ def test_describer_differs_from_the_view_from_denmark_closer():
     different kinds of interjection."""
     from app.voices import CURATED, describer_voice
     assert describer_voice("en") != CURATED.get("danish-perspective:en", "en-US-AriaNeural")
+
