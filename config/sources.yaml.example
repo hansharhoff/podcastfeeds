@@ -33,7 +33,25 @@ meta:
   # Screenshot conversations: map a speaker name (as shown in tweets/chats,
   # lowercase) to a roster key so they are read in that existing voice.
   speaker_aliases:
-    "example author": exampleblog
+    "noah smith": noahpinion
+    "noahpinion": noahpinion
+    # A source's own author turning up as a named speaker in their own
+    # interview transcript should keep the voice they narrate in, not be
+    # treated as a stranger (ep. 447: Matt Yglesias drew a female Indian
+    # voice in his own Slow Boring interview).
+    "matthew yglesias": slowboring
+    "matt yglesias": slowboring
+    "nate silver": silverbulletin
+    "derek thompson": derekthompson
+    "timothy b. lee": understandingai
+    "timothy lee": understandingai
+    "phillips p. o'brien": pobrien
+    "phillips o'brien": pobrien
+    "gary marcus": garymarcus
+    "zvi mowshowitz": thezvi
+    "scott alexander": astralcodexten
+    "brian potter": constructionphysics
+    "marc andreessen": pmarca
 
 defaults:
   retention_days: 60
