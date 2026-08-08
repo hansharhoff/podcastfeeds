@@ -294,9 +294,36 @@ def pdf_text(data: bytes) -> str:
     return re.sub(r"[ \t]{2,}", " ", "\n\n".join(pages)).strip()
 
 
-async def fetch_pdf_text(url: str) -> str:
-    """Download a PDF and extract its text (queue-approved PDFs only — the
-    RSS-side skip in ingest.process_episode stays)."""
+def pdf_title(data: bytes, url: str = "") -> str:
+    """A usable title for a PDF: its own /Title metadata, else the filename.
+
+    A PDF shared by hand carries no page title, so the episode was left as
+    "Untitled" and the narration opened by saying so (ep. 403). The document's
+    own metadata is the reliable source — the reflowed text can't be split back
+    into title and body, since a whole page arrives as one paragraph.
+    """
+    from pypdf import PdfReader
+
+    try:
+        meta = PdfReader(io.BytesIO(data)).metadata
+        title = " ".join(((meta.title if meta else "") or "").split())
+    except Exception:
+        title = ""
+    # Producers leave placeholders and temp filenames in /Title; those are no
+    # better than the fallback below.
+    if title and not title.lower().startswith("untitled") \
+            and not title.lower().endswith(".pdf"):
+        return title
+    from urllib.parse import unquote, urlparse
+
+    name = unquote(urlparse(url).path.rsplit("/", 1)[-1])
+    name = re.sub(r"\.pdf$", "", name, flags=re.I).replace("_", " ").strip()
+    return name
+
+
+async def fetch_pdf(url: str) -> tuple[str, str]:
+    """Download a PDF, returning (title, text). Queue-approved PDFs only — the
+    RSS-side skip in ingest.process_episode stays."""
     if _blocked_target(url):
         raise RuntimeError(f"refusing to fetch non-public address: {url}")
     headers = {"User-Agent": UA}
@@ -305,7 +332,13 @@ async def fetch_pdf_text(url: str) -> str:
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        return pdf_text(resp.content)
+        return pdf_title(resp.content, url), pdf_text(resp.content)
+
+
+async def fetch_pdf_text(url: str) -> str:
+    """Download a PDF and extract its text."""
+    _, text = await fetch_pdf(url)
+    return text
 
 
 def extract_article(html_text: str, url: str = "") -> tuple[str, str]:

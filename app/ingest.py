@@ -23,7 +23,7 @@ from .extract import (
     extract_segments,
     fetch_html,
     fetch_image_jpeg,
-    fetch_pdf_text,
+    fetch_pdf,
     image_area,
     is_link_forwarding_post,
     is_paywalled,
@@ -768,7 +768,11 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         link_source = ""    # the social post `followed_link` came from
         link_follow = ""    # outcome string for provenance, set only for link-forwarding posts
         if is_pdf:
-            body = await fetch_pdf_text(link)
+            # A shared PDF has no page title, so the episode stayed "Untitled"
+            # and the narration opened by saying so (ep. 403).
+            pdf_name, body = await fetch_pdf(link)
+            if pdf_name and (not title or title == "Untitled"):
+                title = pdf_name
             sref = None
         else:
             sref = substack_ref(source, link) if link else None
