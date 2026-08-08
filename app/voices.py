@@ -3,8 +3,11 @@
 Two layers:
   1. CURATED — researched, dialect-matched voices for known authors/speakers.
      Each source's author gets a voice chosen to fit their accent and delivery.
-  2. POOL — everything else (quote voices, image describers, unknown interview
-     guests) draws a contrasting voice from a pool on first use.
+  2. MATCHED — a named person in a transcript (interview guest, screenshot
+     conversation) gets a voice of their own gender, in the closest available
+     accent. Who they are is looked up once and cached (speaker_profile).
+  3. POOL — everything else (quote voices, image describers, labels that are
+     not a specific person) draws a contrasting voice from a pool on first use.
 
 Either way the assignment is PERSISTED in the KV table, so a given speaker
 always sounds the same. `reset_roster()` clears persisted assignments (the
@@ -18,11 +21,14 @@ approximation and a good candidate for an ElevenLabs voice later.
 from __future__ import annotations
 
 import hashlib
+import logging
 
 from sqlmodel import select
 
 from . import db
 from .db import KV
+
+log = logging.getLogger("podcastfeeds")
 
 # Reserved fixed voices (set via sources.yaml, kept OUT of the pool):
 #   en-GB-RyanNeural   — general news / AI digests (male, British anchor)
@@ -75,7 +81,78 @@ VOICE_POOLS: dict[str, list[str]] = {
     ],
 }
 
+# Every en-*/da-* edge-tts voice, tagged (gender, accent) — from
+# edge_tts.list_voices() on 2026-08-08. The POOL above is a *contrast* pool
+# built for quote/describer voices, so handing it out for real people made
+# gender essentially random: Jerusalem Demsas drew a male New Zealand voice
+# while Matt Yglesias drew a female Indian one (ep. 447 feedback). Named
+# speakers are matched against this table instead.
+VOICE_CATALOG: dict[str, tuple[str, str]] = {
+    "en-US-AndrewNeural": ("m", "US"),
+    "en-US-AndrewMultilingualNeural": ("m", "US"),
+    "en-US-BrianNeural": ("m", "US"),
+    "en-US-BrianMultilingualNeural": ("m", "US"),
+    "en-US-ChristopherNeural": ("m", "US"),
+    "en-US-EricNeural": ("m", "US"),
+    "en-US-GuyNeural": ("m", "US"),
+    "en-US-RogerNeural": ("m", "US"),
+    "en-US-SteffanNeural": ("m", "US"),
+    "en-US-AriaNeural": ("f", "US"),
+    "en-US-AvaNeural": ("f", "US"),
+    "en-US-AvaMultilingualNeural": ("f", "US"),
+    "en-US-EmmaNeural": ("f", "US"),
+    "en-US-EmmaMultilingualNeural": ("f", "US"),
+    "en-US-JennyNeural": ("f", "US"),
+    "en-US-MichelleNeural": ("f", "US"),
+    "en-US-AnaNeural": ("f", "US"),          # child voice — never auto-assigned
+    "en-GB-RyanNeural": ("m", "GB"),
+    "en-GB-ThomasNeural": ("m", "GB"),
+    "en-GB-LibbyNeural": ("f", "GB"),
+    "en-GB-MaisieNeural": ("f", "GB"),
+    "en-GB-SoniaNeural": ("f", "GB"),
+    "en-CA-LiamNeural": ("m", "CA"),
+    "en-CA-ClaraNeural": ("f", "CA"),
+    "en-AU-WilliamMultilingualNeural": ("m", "AU"),
+    "en-AU-NatashaNeural": ("f", "AU"),
+    "en-IE-ConnorNeural": ("m", "IE"),
+    "en-IE-EmilyNeural": ("f", "IE"),
+    "en-NZ-MitchellNeural": ("m", "NZ"),
+    "en-NZ-MollyNeural": ("f", "NZ"),
+    "en-ZA-LukeNeural": ("m", "ZA"),
+    "en-ZA-LeahNeural": ("f", "ZA"),
+    "en-IN-PrabhatNeural": ("m", "IN"),
+    "en-IN-NeerjaNeural": ("f", "IN"),
+    "en-IN-NeerjaExpressiveNeural": ("f", "IN"),
+    "en-SG-WayneNeural": ("m", "SG"),
+    "en-SG-LunaNeural": ("f", "SG"),
+    "en-HK-SamNeural": ("m", "HK"),
+    "en-HK-YanNeural": ("f", "HK"),
+    "en-PH-JamesNeural": ("m", "PH"),
+    "en-PH-RosaNeural": ("f", "PH"),
+    "en-KE-ChilembaNeural": ("m", "KE"),
+    "en-KE-AsiliaNeural": ("f", "KE"),
+    "en-NG-AbeoNeural": ("m", "NG"),
+    "en-NG-EzinneNeural": ("f", "NG"),
+    "en-TZ-ElimuNeural": ("m", "TZ"),
+    "en-TZ-ImaniNeural": ("f", "TZ"),
+    "da-DK-JeppeNeural": ("m", "DK"),
+    "da-DK-ChristelNeural": ("f", "DK"),
+}
+
+# The accents a speaker can be matched to, in the order tried when their own
+# has no voice left (or no voice at all — there is no Ukrainian or German
+# English voice, so Zelenskyy lands on a neutral one rather than a random one).
+ACCENTS = ("US", "GB", "CA", "AU", "IE", "NZ", "ZA", "IN",
+           "SG", "HK", "PH", "KE", "NG", "TZ", "DK")
+
+# en-GB-Ryan/Thomas stay out of the contrast POOL (they are fixed config
+# voices) but the matcher may still use them: they are the only British male
+# voices edge-tts has, so excluding them would leave every British man reading
+# in an American accent. Only the child voice is off-limits outright.
+NOT_AUTO_ASSIGNED = frozenset({"en-US-AnaNeural"})
+
 ROSTER_PREFIX = "voice:"
+PROFILE_PREFIX = "speaker-profile:"
 
 
 def get_roster() -> dict[str, str]:
@@ -116,3 +193,130 @@ def assign_voice(roster_key: str, language: str) -> str:
                 voice = pool[idx]
         db.kv_set(s, f"{ROSTER_PREFIX}{roster_key}", voice)
         return voice
+
+
+def _accent_order(accent: str) -> tuple[str, ...]:
+    """The speaker's own accent first, then the rest by how commonly they read
+    as neutral — so a miss degrades to 'plausible' rather than 'random'."""
+    return (accent,) + tuple(a for a in ACCENTS if a != accent)
+
+
+def match_voice(gender: str, accent: str, language: str,
+                avoid: frozenset[str] = frozenset()) -> str | None:
+    """The closest voice of the right gender, or None if gender is unknown.
+
+    Priority is gender, then accent, then a voice nobody else has yet. Gender
+    is never traded away, and the speaker's own accent outranks freshness: an
+    Indian speaker sharing a voice with another Indian speaker in some other
+    episode beats being read in an American accent. `avoid` holds the voices
+    already speaking in THIS episode, which is the one clash worth dodging.
+    """
+    if gender not in ("m", "f"):
+        return None
+    prefix = f"{language}-"
+    taken = set(get_roster().values()) | set(CURATED.values()) | set(avoid)
+
+    def candidates(acc: str) -> list[str]:
+        return [
+            v for v, (g, a) in VOICE_CATALOG.items()
+            if g == gender and a == acc and v.startswith(prefix)
+            and v not in NOT_AUTO_ASSIGNED and v not in avoid
+        ]
+
+    own = _accent_order(accent)[:1]
+    rest = _accent_order(accent)[1:]
+    for group in (own, rest):
+        for acc in group:
+            free = [v for v in candidates(acc) if v not in taken]
+            if free:
+                return free[0]
+        # nothing free in this group: reuse rather than break gender or, for
+        # the speaker's own accent, rather than move to a foreign one
+        for acc in group:
+            reusable = candidates(acc)
+            if reusable:
+                return reusable[0]
+    return None
+
+
+async def speaker_profile(name: str, context: str = "") -> tuple[str, str]:
+    """(gender, accent) for a named speaker, cached forever in the KV table.
+
+    Returns ("unknown", "") when the label is not a specific real person
+    ("Person 1", "Sources", "USA", "Villain"), when the LLM cannot say, or
+    when no LLM backend is available — the caller then falls back to the
+    contrast pool, which is the previous behaviour.
+    """
+    import json as _json
+
+    key = f"{PROFILE_PREFIX}{name.lower()}"
+    with db.session() as s:
+        cached = db.kv_get(s, key)
+    if cached:
+        gender, _, accent = cached.partition("/")
+        return gender, accent
+
+    prompt = (
+        "Identify this speaker from a podcast or interview transcript. Reply "
+        'with ONLY a JSON object: {"person": true/false, "gender": "m"|"f"|'
+        '"unknown", "accent": "<code>"}\n\n'
+        '- "person": false if the label is not one specific real human — a '
+        'placeholder ("Person 1", "First speaker"), a role ("Villain", '
+        '"User"), an organisation, a country, or a product.\n'
+        '- "gender": that person\'s gender. Use "unknown" unless you are '
+        "confident who they are.\n"
+        f"- \"accent\": the closest English accent from {', '.join(ACCENTS)} "
+        "— their own nationality where one fits, else the nearest neutral.\n\n"
+        "Search the web if the name alone is not enough to place them; most of "
+        "these are working journalists, academics or public figures rather than "
+        "household names.\n\n"
+        + (f"Context: this transcript is {context}.\n" if context else "")
+        + f"Speaker label: {name}"
+    )
+    try:
+        from .summarize import llm
+
+        # One cached lookup per speaker ever, so the search is worth it: without
+        # it the model would not place Jerusalem Demsas, the speaker whose
+        # swapped voice started all this.
+        text = await llm(prompt, tools=["WebSearch"])
+        start, end = text.find("{"), text.rfind("}")
+        data = _json.loads(text[start:end + 1])
+        gender = data.get("gender") if data.get("person") else "unknown"
+        gender = gender if gender in ("m", "f") else "unknown"
+        accent = data.get("accent") if data.get("accent") in ACCENTS else ""
+        if gender == "unknown":
+            accent = ""  # nothing to match on; the pool decides
+    except Exception as exc:
+        # No LLM (or a bad answer): stay silent and let the pool decide, so a
+        # broken shim degrades to the old behaviour instead of failing the run.
+        log.warning("speaker profile lookup failed for %r: %s", name, exc)
+        return "unknown", ""
+
+    with db.session() as s:
+        db.kv_set(s, key, f"{gender}/{accent}")
+    log.info("speaker profile: %s -> %s/%s", name, gender, accent or "-")
+    return gender, accent
+
+
+async def warm_speaker_voices(keyed_names: dict[str, str], language: str,
+                              avoid: frozenset[str] = frozenset(),
+                              context: str = "") -> None:
+    """Resolve a matched voice for each {roster_key: display_name} that has no
+    assignment yet, so the synchronous assign_voice() path below finds it.
+
+    Curated keys and already-persisted ones are left alone — an established
+    speaker keeps the voice the listener already knows.
+    """
+    for roster_key, display_name in keyed_names.items():
+        if roster_key in CURATED:
+            continue
+        with db.session() as s:
+            if db.kv_get(s, f"{ROSTER_PREFIX}{roster_key}"):
+                continue
+        gender, accent = await speaker_profile(display_name, context)
+        voice = match_voice(gender, accent, language, avoid)
+        if not voice:
+            continue  # unknown speaker: assign_voice() draws from the pool
+        with db.session() as s:
+            db.kv_set(s, f"{ROSTER_PREFIX}{roster_key}", voice)

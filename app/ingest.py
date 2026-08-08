@@ -48,7 +48,7 @@ from .summarize import (
 )
 from .tasks import spawn
 from .tts import synthesize, synthesize_blocks
-from .voices import assign_voice
+from .voices import assign_voice, warm_speaker_voices
 
 log = logging.getLogger("podcastfeeds")
 
@@ -1083,10 +1083,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             )
             aliases = load_config().speaker_aliases
 
-            def speaker_voice(name: str) -> str:
-                key = aliases.get(name.lower().lstrip("@")) or \
+            def speaker_key(name: str) -> str:
+                return aliases.get(name.lower().lstrip("@")) or \
                     f"speaker:{name.lower().lstrip('@').replace(' ', '-')[:40]}"
-                return assign_voice(key, language)
+
+            def speaker_voice(name: str) -> str:
+                return assign_voice(speaker_key(name), language)
 
             image_srcs = [s_["src"] for s_ in segments if s_["type"] == "image"][:8]
             jpeg_list = await asyncio.gather(*(fetch_image_jpeg(u) for u in image_srcs))
@@ -1099,6 +1101,27 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 s_ for s_ in segments
                 if s_["type"] != "image" or images_meta.get(s_["src"], {}).get("jpeg")
             ]
+
+            # Resolve every named speaker BEFORE narration: who they are needs
+            # an LLM call, and the block builder below is synchronous. Each
+            # lookup is cached forever, so this costs one call per speaker the
+            # roster has never seen. Skipping it just falls back to the pool.
+            named: dict[str, str] = {
+                speaker_key(s_["speaker"]): s_["speaker"]
+                for s_ in segments
+                if s_.get("type") == "dialogue" and s_.get("speaker")
+            }
+            for meta_ in images_meta.values():
+                convo = meta_.get("analysis") or {}
+                if convo.get("kind") == "conversation":
+                    for msg in convo.get("messages", [])[:10]:
+                        who = str(msg.get("speaker", "")).strip()
+                        if who:
+                            named[speaker_key(who)] = who
+            if named:
+                await warm_speaker_voices(
+                    named, language, frozenset({voice, quote_voice}),
+                    context=f"from {source.name}, titled {title!r}")
 
             describer_voice = pick_voice(
                 SourceDef(**{**source.__dict__, "voice": ""}),
