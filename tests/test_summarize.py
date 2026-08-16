@@ -145,3 +145,78 @@ def test_scrub_light_still_strips_strikethrough_markers():
     from app.summarize import scrub_light
 
     assert scrub_light("it was ~~cancelled~~ postponed") == "it was cancelled postponed"
+
+
+def test_digest_prompt_states_the_period_it_covers():
+    """The prompt said nothing about cadence, so a daily digest opened "This
+    week, we're looking at..." and signed off "That's this week's digest"
+    (ep. 443 feedback: "it is not ai announcements for the week, rather the day")."""
+    import asyncio
+
+    from app import summarize
+
+    seen = {}  # scrub_script calls llm too; keep the first (digest) call
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        seen.setdefault("prompt", prompt)
+        seen.setdefault("tools", tools)
+        return "A spoken script. " * 40
+
+    old = summarize.llm
+    summarize.llm = fake_llm
+    try:
+        asyncio.get_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "August 15th, 2026",
+            [{"title": "T", "summary": "S"}], "en", window="the last 24 hours"))
+    finally:
+        summarize.llm = old
+
+    assert "the last 24 hours" in seen["prompt"]
+    assert "never describe it as any other span of time" in seen["prompt"]
+    assert seen["tools"] == ["WebSearch"], "research is what earns the length"
+
+
+def test_digest_window_is_measured_not_guessed():
+    from datetime import UTC, datetime, timedelta
+
+    from app.ingest import _digest_window
+
+    now = datetime(2026, 8, 15, 5, 0, tzinfo=UTC)
+    assert _digest_window(now - timedelta(hours=24), now, "en") == "the last 24 hours"
+    assert _digest_window(now - timedelta(days=7), now, "en") == "the last 7 days"
+    assert _digest_window(now - timedelta(hours=24), now, "da") == "de seneste 24 timer"
+
+
+def test_digest_window_never_returns_zero_hours():
+    """A digest rebuilt moments after the last one must still name a period."""
+    from datetime import UTC, datetime
+
+    from app.ingest import _digest_window
+
+    now = datetime(2026, 8, 15, 5, 0, tzinfo=UTC)
+    assert _digest_window(now, now, "en") == "the last 1 hours"
+
+
+def test_digest_prompt_forbids_inventing_specifics():
+    """Asked for a word count off a two-line summary, a dry run manufactured
+    "after watching thousands of Claude Code sessions" — reporting-shaped
+    detail that was in neither the item nor any search result."""
+    import asyncio
+
+    from app import summarize
+
+    seen = {}
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        seen.setdefault("prompt", prompt)
+        return "A spoken script. " * 40
+
+    old = summarize.llm
+    summarize.llm = fake_llm
+    try:
+        asyncio.get_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+    finally:
+        summarize.llm = old
+
+    assert "Never invent" in seen["prompt"]
