@@ -453,25 +453,47 @@ def _extractive_digest(source_name: str, date_str: str, items: list[dict],
 
 
 async def digest_script(source_name: str, date_str: str, items: list[dict],
-                        language: str) -> tuple[str, dict]:
-    """Returns (script, provenance-fragment)."""
+                        language: str, window: str = "since the last edition",
+                        ) -> tuple[str, dict]:
+    """Returns (script, provenance-fragment).
+
+    `window` is the period the digest actually covers. Without it the model
+    guessed, and a daily digest opened "This week, we're looking at…" and closed
+    "That's this week's digest" (ep. 443 feedback).
+    """
     lang_name = "Danish" if language == "da" else "English"
     bulletin = "\n\n".join(
         f"### {i['title']}\n{strip_html(i.get('summary', ''))[:1500]}" for i in items
     )
     prompt = (
         f"Write a spoken news digest script in {lang_name} for a podcast episode called "
-        f"'{source_name}' dated {date_str}. Don't just read the announcements back: rephrase "
+        f"'{source_name}' dated {date_str}. This edition covers {window} — say so if you "
+        "refer to the period at all, and never describe it as any other span of time. "
+        "Don't just read the announcements back: rephrase "
         "them so the listener gets the overview first, then the perspective — what is new, "
         "why it matters, how items relate, and a calibrated sense of how significant each is. "
-        "Group related items; drop pure marketing fluff. Plain text only — no markdown, no "
+        "Group related items; drop pure marketing fluff. "
+        # Some days these feeds carry one item and the episode came out at 66
+        # seconds. Research is what fills the time; padding the same thin facts
+        # with adjectives would be worse than a short episode.
+        "Aim for three to five minutes of speech (roughly 450 to 750 words). Use web search "
+        "to earn that length: what led up to each item, how it was received, who it affects, "
+        "what comparable efforts exist. Add substance, never filler — if the material is "
+        "genuinely thin after searching, write a shorter script rather than padding it. "
+        # Told to reach a word count, the model will otherwise manufacture
+        # specifics that sound like reporting: a dry run invented "after
+        # watching thousands of Claude Code sessions" out of a two-line summary.
+        "State only what the items or your search results actually support. Never invent "
+        "quotes, figures, dates, internal details or claims about what a company observed "
+        "or intended; attribute anything you did find to where it came from. "
+        "Plain text only — no markdown, no "
         "headings, no stage directions, no URLs (say 'the link is in the show notes' if needed); "
         "the text is fed directly to text-to-speech. Start with a one-sentence intro, end with "
         "a one-sentence sign-off. Reply with ONLY the script itself — no framing before or "
         f"after.\n\nItems:\n{bulletin}"
     )
     try:
-        raw = await llm(prompt)
+        raw = await llm(prompt, tools=["WebSearch"])
         script, scrub = await scrub_script(raw, language)
         if looks_meta(script) or len(script) < 200:
             raise RuntimeError("digest output invalid (meta or too short)")

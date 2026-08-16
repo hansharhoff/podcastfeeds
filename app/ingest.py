@@ -1319,6 +1319,21 @@ async def _enrich_items(items: list[dict], min_summary: int = 120) -> None:
     await asyncio.gather(*(enrich(i) for i in items))
 
 
+def _digest_window(cutoff: datetime, now: datetime, language: str) -> str:
+    """How long this edition actually covers, in words the script can reuse.
+
+    The prompt used to say nothing, so the model filled the gap with "this
+    week" on a digest that runs every morning (ep. 443 feedback)."""
+    hours = max(1, round((now - cutoff).total_seconds() / 3600))
+    if language == "da":
+        if hours <= 36:
+            return f"de seneste {hours} timer"
+        return f"de seneste {round(hours / 24)} dage"
+    if hours <= 36:
+        return f"the last {hours} hours"
+    return f"the last {round(hours / 24)} days"
+
+
 async def build_digest(source: SourceDef) -> bool:
     """Build one digest episode from items newer than the last build,
     aggregated across all of the source's feed URLs."""
@@ -1374,7 +1389,8 @@ async def build_digest(source: SourceDef) -> bool:
     now = utcnow()
     language = source.language if source.language in ("da", "en") else "da"
     date_str = spoken_date(now, language)
-    script, gen_prov = await digest_script(source.name, date_str, items, language)
+    script, gen_prov = await digest_script(
+        source.name, date_str, items, language, window=_digest_window(cutoff, now, language))
     voice = pick_voice(source, language)
     title = f"{source.name} – {now.strftime('%Y-%m-%d %H:%M')}"
 
