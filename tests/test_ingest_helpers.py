@@ -734,3 +734,46 @@ def test_record_available_still_caps_at_keep():
     src = SourceDef(slug="capped", name="C", type="rss", url="u")
     recent = [{"title": f"Post {i}", "id": f"p{i}"} for i in range(10)]
     assert _record_available(src, recent, keep=4) == 4
+
+
+def _flight_page(rows: list[str]) -> str:
+    """A Next.js App Router page: Flight rows escaped inside __next_f pushes."""
+    import json as _json
+
+    pushes = "".join(
+        f"<script>self.__next_f.push([1,{_json.dumps(r)}])</script>" for r in rows
+    )
+    return f"<html><body>{pushes}</body></html>"
+
+
+def test_breaking_articles_are_read_from_app_router_flight_rows():
+    """DR's front page moved off __NEXT_DATA__ around 2026-08-09; the poll then
+    found nothing for a week while warning once per poll and looking healthy."""
+    from app.ingest import _collect_breaking, _next_flight_rows
+
+    row = (
+        '8:{"items":[{"title":"Stort udslip i Kattegat",'
+        '"summary":"Beredskabet er kaldt ud.",'
+        '"urlPathId":"/nyheder/indland/stort-udslip",'
+        '"publications":[{"breaking":true,"live":false}]},'
+        '{"title":"Roligt vejr i vente","summary":"",'
+        '"urlPathId":"/nyheder/vejret/roligt",'
+        '"publications":[{"breaking":false,"live":false}]}]}'
+    )
+    page = _flight_page(['2:I[9766,[],""]\n', row + "\n"])
+    got = _collect_breaking(_next_flight_rows(page))
+    assert [a["urlPathId"] for a in got] == ["/nyheder/indland/stort-udslip"]
+    assert got[0]["summary"] == "Beredskabet er kaldt ud."
+
+
+def test_flight_rows_survive_module_references_and_junk():
+    from app.ingest import _next_flight_rows
+
+    page = _flight_page(['1:"$Sreact.fragment"\n3:I[57150,[],""]\nnot-a-row\n4:{"a":1}\n'])
+    assert {"a": 1} in _next_flight_rows(page)
+
+
+def test_a_page_with_neither_shape_yields_no_rows():
+    from app.ingest import _next_flight_rows
+
+    assert _next_flight_rows("<html><body>nothing here</body></html>") == []

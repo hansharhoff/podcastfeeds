@@ -346,10 +346,41 @@ def _record_available(source: SourceDef, recent: list, keep: int) -> int:
 _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', re.S
 )
+# The App Router streams the same tree as escaped Flight rows instead of one
+# __NEXT_DATA__ blob. DR's front page switched around 2026-08-09 and the
+# breaking poll then found nothing at all for a week, warning once per poll
+# while looking otherwise healthy. Article pages are still Pages Router, so
+# both shapes have to be read.
+_NEXT_F_RE = re.compile(r'self\.__next_f\.push\(\[1,("(?:[^"\\]|\\.)*")\]\)')
+
+
+def _next_flight_rows(html_text: str) -> list:
+    """Every App Router Flight row that parses as JSON. Rows are `<id>:<json>`;
+    module references (`4:I[...]`) parse harmlessly and carry no articles."""
+    chunks = _NEXT_F_RE.findall(html_text)
+    if not chunks:
+        return []
+    try:
+        payload = "".join(json.loads(c) for c in chunks)
+    except json.JSONDecodeError:
+        return []
+    rows = []
+    for row in payload.split("\n"):
+        _, sep, body = row.partition(":")
+        if not sep:
+            continue
+        body = body.removeprefix("I")
+        if body[:1] not in ("[", "{"):
+            continue
+        try:
+            rows.append(json.loads(body))
+        except json.JSONDecodeError:
+            continue
+    return rows
 
 
 def _collect_breaking(data) -> list[dict]:
-    """Walk DR's __NEXT_DATA__ tree, returning breaking articles as
+    """Walk DR's embedded data tree, returning breaking articles as
     {title, summary, urlPathId}. An article is breaking if ANY of its
     publications has breaking == true. Deduped by urlPathId."""
     found: list[dict] = []
@@ -392,15 +423,19 @@ async def poll_breaking(source: SourceDef) -> int:
         return 0
 
     m = _NEXT_DATA_RE.search(html_text)
-    if not m:
-        log.warning("breaking poll %s: __NEXT_DATA__ script tag not found", source.slug)
-        return 0
-    try:
-        data = json.loads(m.group(1))
-    except json.JSONDecodeError as exc:
-        log.warning("breaking poll %s: __NEXT_DATA__ JSON parse failed: %s",
-                    source.slug, exc)
-        return 0
+    if m:
+        try:
+            data = json.loads(m.group(1))
+        except json.JSONDecodeError as exc:
+            log.warning("breaking poll %s: __NEXT_DATA__ JSON parse failed: %s",
+                        source.slug, exc)
+            return 0
+    else:
+        data = _next_flight_rows(html_text)
+        if not data:
+            log.warning("breaking poll %s: no __NEXT_DATA__ and no Flight rows "
+                        "— the page shape changed again", source.slug)
+            return 0
 
     articles = _collect_breaking(data)
     if not articles:
