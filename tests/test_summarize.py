@@ -131,3 +131,17 @@ def test_scrub_light_linearizes_tables():
     out = scrub_light(EP232_TABLE)
     assert "|" not in out and "---" not in out
     assert "12.7%" in out
+
+
+def test_scrub_light_keeps_the_approximation_tilde():
+    """Stripping every ~ (added 2026-08-08 for stray strikethrough markers)
+    turned rounded figures into exact claims: "~$5B" was read as "$5B"."""
+    from app.summarize import scrub_light
+
+    assert scrub_light("roughly ~50 mio. and ~$5B") == "roughly ~50 mio. and ~$5B"
+
+
+def test_scrub_light_still_strips_strikethrough_markers():
+    from app.summarize import scrub_light
+
+    assert scrub_light("it was ~~cancelled~~ postponed") == "it was cancelled postponed"

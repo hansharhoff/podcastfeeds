@@ -310,11 +310,16 @@ def _record_available(source: SourceDef, recent: list, keep: int) -> int:
     """Record the newest `keep` filter-passing feed entries as skipped rows (if
     not already episodes) so they show in the admin panel with an unskip button."""
     made = 0
-    for entry in recent[:keep]:
+    # Filter first, then take `keep`: slicing first meant a source whose feed is
+    # mostly non-matching (ACX open threads) showed only the few matches inside
+    # the first `keep` entries, not `keep` browsable ones.
+    passing = [
+        e for e in recent
+        if not source.title_filter or re.search(source.title_filter, e.get("title", ""))
+    ]
+    for entry in passing[:keep]:
         guid = _entry_guid(entry)
         if not guid:
-            continue
-        if source.title_filter and not re.search(source.title_filter, entry.get("title", "")):
             continue
         with db.session() as s:
             if s.exec(
@@ -979,6 +984,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         if source.type == "inbox" and link:
             roster_key = urlparse(link).netloc.removeprefix("www.")
         voice = pick_voice(source, language, roster_key)
+        # Kept so a mid-episode ElevenLabs failure falls back to this source's
+        # own edge-tts voice rather than a US-English default reading Danish.
+        edge_voice = voice
         # ElevenLabs main voice: only if the source is toggled on AND the whole
         # episode fits the remaining monthly budget (else stay on edge-tts).
         from . import elevenlabs
@@ -1196,6 +1204,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 filename, size, seconds = await synthesize_blocks(
                     blocks, title=title, album=source.name,
                     artist=source.name, date=str(utcnow().year), cover=cover,
+                    fallback_voice=edge_voice,
                 )
             show_notes = _interleaved_shownotes(source_label, segments, link)
         else:
@@ -1245,6 +1254,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         log.exception("episode %s failed", ep_id)
         with db.session() as s:
             ep = s.get(Episode, ep_id)
+            if ep is None:  # retention cleanup can drop the row mid-render
+                return
             ep.status = "error"
             ep.error = str(exc)[:500]
             s.add(ep)
@@ -1365,8 +1376,13 @@ async def build_digest(source: SourceDef) -> bool:
     return True
 
 
-async def submit_url(url: str, title: str = "", language: str = "auto") -> int:
-    """Create an inbox episode for a shared URL; processing happens async."""
+async def submit_url(url: str, title: str = "", language: str = "auto",
+                     force: bool = False) -> int:
+    """Create an inbox episode for a shared URL; processing happens async.
+
+    force re-renders an episode that already exists — resharing a URL should
+    stay a no-op, but a redo click is an explicit request to regenerate.
+    """
     config = load_config()
     inbox = next(s for s in config.sources if s.type == "inbox")
     # Sharing a URL by hand is as deliberate as clicking generate on a queued
@@ -1384,7 +1400,7 @@ async def submit_url(url: str, title: str = "", language: str = "auto") -> int:
             )
         ).first()
         if existing:
-            if existing.status == "error":  # allow retry by resubmitting
+            if force or existing.status == "error":  # retry by resubmitting
                 existing.status = "pending"
                 s.add(existing)
                 s.commit()

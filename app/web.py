@@ -32,7 +32,9 @@ app = FastAPI(title="podcastfeeds", docs_url=None, redoc_url=None, openapi_url=N
 
 
 def _check(token: str) -> None:
-    if not hmac.compare_digest(token, get_token()):
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str, so a
+    # request for /æøå/ would 500 with a traceback instead of quietly 404ing.
+    if not hmac.compare_digest(token.encode(), get_token().encode()):
         raise HTTPException(status_code=404)
 
 
