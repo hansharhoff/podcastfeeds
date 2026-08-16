@@ -114,3 +114,16 @@ def test_stuck_episodes_flags_old_pending_and_processing():
     assert titles == ["Old pending", "Old processing"]
     assert all(set(e) >= {"id", "title", "status", "source_slug", "age_hours"}
                for e in stuck)
+
+
+def test_a_non_ascii_token_path_404s_instead_of_500ing():
+    """hmac.compare_digest raises TypeError on non-ASCII str, so GET /æøå/
+    returned a 500 with a traceback rather than the intended 404."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.web import _check
+
+    with pytest.raises(HTTPException) as exc:
+        _check("æøå")
+    assert exc.value.status_code == 404

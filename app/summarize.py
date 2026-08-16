@@ -65,7 +65,14 @@ async def _llm_via_cli(prompt: str, model: str, tools: list[str], thinking: bool
         *cmd, env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+    # wait_for cancels the wait, not the child: without the kill a timed-out
+    # `claude` keeps running on the host and every later timeout leaks another.
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode != 0 or not stdout.strip():
         raise RuntimeError(f"claude CLI failed: {stderr.decode()[-300:]}")
     return stdout.decode().strip()
@@ -170,7 +177,10 @@ def scrub_light(text: str) -> str:
     text = linearize_markdown_tables(text)           # pipe tables -> spoken prose
     text = _MD_LINK_RE.sub(r"\1", text)              # [text](url) -> text
     text = _URL_RE.sub(_spoken_domain, text)         # bare URLs -> domain or gone
-    text = re.sub(r"[*_`#~]+", "", text)             # markdown emphasis/headers/strike
+    text = re.sub(r"~~+", "", text)                  # strikethrough markers only:
+    # a lone "~" is an approximation ("~$5B", "~50 mio."), and stripping it
+    # turns a rounded figure into an exact claim.
+    text = re.sub(r"[*_`#]+", "", text)              # markdown emphasis/headers
     text = _FOOTNOTE_RE.sub("", text)                # inline footnote markers [1] -> gone
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
@@ -334,7 +344,12 @@ async def _vision_via_cli(prompt: str, image: bytes) -> str:
             "--model", LLM_MODEL, "--allowedTools", "Read",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
     finally:
         os.unlink(path)
     if proc.returncode != 0 or not stdout.strip():
@@ -351,19 +366,23 @@ async def vision_analyze(image: bytes, language: str) -> dict | None:
     lang_name = "Danish" if language == "da" else "English"
     prompt = VISION_PROMPT.format(lang_name=lang_name)
     try:
-        if LLM_URL:
-            async with httpx.AsyncClient(timeout=300) as client:
-                resp = await client.post(f"{LLM_URL}/v1/vision", json={
-                    "prompt": prompt,
-                    "image_b64": base64.b64encode(image).decode(),
-                    "mime": "image/jpeg",
-                })
-                resp.raise_for_status()
-                text = resp.json().get("text", "")
-        elif shutil.which("claude"):
-            text = await _vision_via_cli(prompt, image)
-        else:
-            return None
+        # Same lock as llm(): vision goes through the same one-subprocess-per-
+        # request shim, so unserialized image calls exhaust exactly what the
+        # lock was added to protect.
+        async with _llm_lock:
+            if LLM_URL:
+                async with httpx.AsyncClient(timeout=300) as client:
+                    resp = await client.post(f"{LLM_URL}/v1/vision", json={
+                        "prompt": prompt,
+                        "image_b64": base64.b64encode(image).decode(),
+                        "mime": "image/jpeg",
+                    })
+                    resp.raise_for_status()
+                    text = resp.json().get("text", "")
+            elif shutil.which("claude"):
+                text = await _vision_via_cli(prompt, image)
+            else:
+                return None
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
             return None

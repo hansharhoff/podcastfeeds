@@ -348,7 +348,7 @@ def _queue_item(**over):
 def test_generate_article_routes_to_submit_url(monkeypatch):
     calls = {}
 
-    async def fake_submit_url(url, title="", language="auto"):
+    async def fake_submit_url(url, title="", language="auto", force=False):
         calls["url"], calls["title"] = url, title
         return 42
 
@@ -530,7 +530,7 @@ def test_generate_missing_item_refused():
 
 
 def test_generate_article_failure_requeues_item(monkeypatch):
-    async def boom(url, title="", language="auto"):
+    async def boom(url, title="", language="auto", force=False):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(ticktick, "submit_url", boom)
@@ -719,3 +719,55 @@ def test_redo_does_not_stack_the_source_label_on_the_title(monkeypatch):
 
     assert first == second
     assert second.count("grc.com") == 1
+
+
+def test_redo_on_a_queued_article_actually_regenerates_it():
+    """generate_item's article branch calls submit_url, which returned an
+    existing ready episode untouched — so redo on a queue-generated article was
+    a silent no-op while the UI redirected as though it had worked."""
+    import app.ingest as ingest
+    from app.db import Episode
+
+    with db.session() as s:
+        ep = Episode(source_slug="inbox", guid="https://ex.test/piece",
+                     title="Piece", link="https://ex.test/piece", status="ready")
+        s.add(ep)
+        s.commit()
+        ep_id = ep.id
+
+    spawned = []
+    orig_spawn = ingest.spawn
+    ingest.spawn = lambda coro: (spawned.append(coro), coro.close())
+    try:
+        got = _run(ingest.submit_url("https://ex.test/piece", force=True))
+    finally:
+        ingest.spawn = orig_spawn
+
+    assert got == ep_id
+    assert spawned, "force must re-run process_episode on the existing row"
+    with db.session() as s:
+        assert s.get(Episode, ep_id).status == "pending"
+
+
+def test_resharing_a_url_without_force_stays_a_no_op():
+    import app.ingest as ingest
+    from app.db import Episode
+
+    with db.session() as s:
+        ep = Episode(source_slug="inbox", guid="https://ex.test/again",
+                     title="Again", link="https://ex.test/again", status="ready")
+        s.add(ep)
+        s.commit()
+        ep_id = ep.id
+
+    spawned = []
+    orig_spawn = ingest.spawn
+    ingest.spawn = lambda coro: (spawned.append(coro), coro.close())
+    try:
+        got = _run(ingest.submit_url("https://ex.test/again"))
+    finally:
+        ingest.spawn = orig_spawn
+
+    assert got == ep_id and not spawned
+    with db.session() as s:
+        assert s.get(Episode, ep_id).status == "ready"

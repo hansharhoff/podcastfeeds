@@ -191,7 +191,11 @@ async def generate_item(item_id: int, mode: str = "summary") -> int:
     inbox = next(src for src in config.sources if src.type == "inbox")
     try:
         if kind == "article":
-            ep_id = await submit_url(url, title=title)
+            # force: every caller of generate_item is an explicit click, but
+            # submit_url alone returns an existing ready episode untouched — so
+            # redo on a queued article silently did nothing while the UI
+            # redirected as though it had worked.
+            ep_id = await submit_url(url, title=title, force=True)
         elif kind == "pdf":
             ep_id = _create_episode(inbox.slug, url, title, pdf_url(url))
             source = SourceDef(**{**inbox.__dict__, "allow_pdf": True, "voice": "",
@@ -336,12 +340,14 @@ async def _render_book_brief(ep_id: int, item_id: int, inbox, title: str,
         log.exception("book brief failed for queue item %s", item_id)
         with _db.session() as s:
             ep = s.get(Episode, ep_id)
-            ep.status = "error"
-            ep.error = f"book brief failed: {exc}"[:300]
-            s.add(ep)
+            if ep is not None:  # retention cleanup can drop either row mid-render
+                ep.status = "error"
+                ep.error = f"book brief failed: {exc}"[:300]
+                s.add(ep)
             item = s.get(TickTickItem, item_id)
-            item.status = "queued"
-            item.last_error = str(exc)[:300]
-            item.episode_id = None
-            s.add(item)
+            if item is not None:
+                item.status = "queued"
+                item.last_error = str(exc)[:300]
+                item.episode_id = None
+                s.add(item)
             s.commit()

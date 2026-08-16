@@ -60,10 +60,12 @@ def has_speech(text: str) -> bool:
     return bool(_SPEAKABLE.search(text))
 
 
-async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11) -> None:
+async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11,
+                       fallback_voice: str = "") -> None:
     # ElevenLabs voices are encoded as "eleven:<voice_id>". Budget was already
     # checked at episode level; if a call fails here, fall back to edge-tts so
-    # the episode still completes.
+    # the episode still completes. The caller passes the episode's own edge
+    # voice, so a Danish source doesn't finish in American English.
     if voice.startswith("eleven:"):
         from . import elevenlabs
         try:
@@ -71,8 +73,8 @@ async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11
             out_path.write_bytes(audio)
             return
         except Exception as exc:
-            log.warning("elevenlabs synth failed (%s); falling back to edge-tts", exc)
-            voice = EDGE_FALLBACK_VOICE
+            voice = fallback_voice or EDGE_FALLBACK_VOICE
+            log.warning("elevenlabs synth failed (%s); falling back to %s", exc, voice)
     for attempt in range(1, attempts + 1):
         try:
             await edge_tts.Communicate(text, voice=voice).save(str(out_path))
@@ -162,7 +164,7 @@ def _write_chapters(path: Path, chapters: list[tuple[float, dict]], total: float
 
 async def synthesize_blocks(
     blocks: list[dict], title: str, album: str, artist: str, date: str,
-    cover: bytes | None = None,
+    cover: bytes | None = None, fallback_voice: str = "",
 ) -> tuple[str, int, int]:
     """Multi-voice synthesis with optional embedded chapters.
 
@@ -182,8 +184,10 @@ async def synthesize_blocks(
             text = b["text"].strip()
             if not text:
                 continue
-            if b.get("chapter"):
-                chapters.append((offset, b["chapter"]))
+            # Opened at the first chunk that actually produces audio: a block
+            # whose text is all punctuation would otherwise start a chapter
+            # that ends where it begins.
+            pending_chapter = b.get("chapter")
             for chunk in _split_text(text):
                 if not has_speech(chunk):
                     # Punctuation-only leftovers (stray "~~", "---", bullets)
@@ -191,8 +195,11 @@ async def synthesize_blocks(
                     # dropping them.
                     log.info("skipping unspeakable chunk: %r", chunk[:40])
                     continue
+                if pending_chapter:
+                    chapters.append((offset, pending_chapter))
+                    pending_chapter = None
                 part = Path(tmp) / f"part{len(parts):05d}.mp3"
-                await _synth_chunk(chunk, b["voice"], part)
+                await _synth_chunk(chunk, b["voice"], part, fallback_voice=fallback_voice)
                 parts.append(part)
                 offset += MP3(str(part)).info.length
         if not parts:

@@ -711,3 +711,26 @@ def test_requeue_approves_pdfs_for_the_episode_it_requeues(monkeypatch):
     assert seen["source"].allow_pdf is True
     with _db.session() as s:
         assert s.get(_db.Episode, ep_id).status == "pending"
+
+
+def test_record_available_filters_before_taking_the_newest_few():
+    """Slicing first meant a source whose feed is mostly non-matching (ACX open
+    threads) surfaced only the matches inside the first `keep` entries."""
+    from app.config import SourceDef
+    from app.ingest import _record_available
+
+    src = SourceDef(slug="acx", name="ACX", type="rss", url="u",
+                    title_filter="^Links")
+    recent = [{"title": f"Open Thread {i}", "id": f"o{i}"} for i in range(9)]
+    recent += [{"title": "Links For August", "id": "L1"}]
+    made = _record_available(src, recent, keep=3)
+    assert made == 1, "the one matching entry must be reachable past 9 non-matches"
+
+
+def test_record_available_still_caps_at_keep():
+    from app.config import SourceDef
+    from app.ingest import _record_available
+
+    src = SourceDef(slug="capped", name="C", type="rss", url="u")
+    recent = [{"title": f"Post {i}", "id": f"p{i}"} for i in range(10)]
+    assert _record_available(src, recent, keep=4) == 4

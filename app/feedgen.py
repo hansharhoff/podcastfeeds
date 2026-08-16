@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from email.utils import format_datetime
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import escape, quoteattr
 
 from sqlmodel import select
 
@@ -41,12 +41,16 @@ def _item_xml(ep: Episode, base: str, token: str, source_name: str) -> str:
         f"      <link>{link}</link>",
         f'      <guid isPermaLink="false">{escape(f"{ep.source_slug}:{ep.guid}")}</guid>',
         f"      <pubDate>{_rfc2822(ep.published_at or ep.created_at)}</pubDate>",
-        f'      <enclosure url="{escape(audio_url)}" length="{ep.audio_bytes}" type="audio/mpeg"/>',
+        # quoteattr, not escape: escape() leaves '"' alone, and one quote in a
+        # feed-supplied enclosure URL or og:image would close the attribute and
+        # invalidate the whole feed — every episode of that source disappears,
+        # not just the bad one.
+        f'      <enclosure url={quoteattr(audio_url)} length="{ep.audio_bytes}" type="audio/mpeg"/>',
         f"      <itunes:author>{escape(source_name)}</itunes:author>",
         f"      <itunes:episode>{ep.id}</itunes:episode>",
     ]
     if ep.image_url:
-        parts.append(f'      <itunes:image href="{escape(ep.image_url)}"/>')
+        parts.append(f"      <itunes:image href={quoteattr(ep.image_url)}/>")
     if ep.audio_seconds:
         parts.append(f"      <itunes:duration>{_duration(ep.audio_seconds)}</itunes:duration>")
     parts.append("    </item>")
@@ -87,10 +91,10 @@ def build_feed(
     <link>{escape(base)}</link>
     <description>{escape(description)}</description>
     <language>da</language>
-    <atom:link href="{escape(feed_url)}" rel="self" type="application/rss+xml"/>
+    <atom:link href={quoteattr(feed_url)} rel="self" type="application/rss+xml"/>
     <lastBuildDate>{_rfc2822(None)}</lastBuildDate>
     <itunes:author>{escape(config.author)}</itunes:author>
-    <itunes:image href="{escape(cover_url)}"/>
+    <itunes:image href={quoteattr(cover_url)}/>
     <itunes:category text="News"/>
     <itunes:explicit>false</itunes:explicit>
 {items}

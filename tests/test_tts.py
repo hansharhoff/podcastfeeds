@@ -45,3 +45,55 @@ def test_scrub_light_strips_strikethrough_markers():
     from app.summarize import scrub_light
     assert scrub_light("~~struck out~~ but readable") == "struck out but readable"
     assert scrub_light("~~") == ""
+
+
+def test_elevenlabs_failure_falls_back_to_the_episodes_own_voice():
+    """A Danish source that hit an ElevenLabs error finished in a US English
+    voice reading Danish, because the fallback was a hardcoded constant."""
+    import asyncio
+    from pathlib import Path
+
+    from app import tts
+
+    used = {}
+
+    class _FakeComm:
+        def __init__(self, text, voice):
+            used["voice"] = voice
+
+        async def save(self, path):
+            Path(path).write_bytes(b"\xff\xfb\x00")
+
+    async def _boom(text, voice_id):
+        raise RuntimeError("eleven down")
+
+    import types
+    fake = types.SimpleNamespace(synth=_boom)
+    import sys
+    sys.modules["app.elevenlabs"] = fake
+    old = tts.edge_tts.Communicate
+    tts.edge_tts.Communicate = _FakeComm
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "x.mp3"
+            asyncio.get_event_loop().run_until_complete(
+                tts._synth_chunk("hej", "eleven:abc", out, fallback_voice="da-DK-JeppeNeural")
+            )
+    finally:
+        tts.edge_tts.Communicate = old
+        del sys.modules["app.elevenlabs"]
+    assert used["voice"] == "da-DK-JeppeNeural"
+
+
+def test_a_silent_block_does_not_open_a_zero_length_chapter():
+    """A chapter was registered before synthesis, so a block whose text is all
+    punctuation produced a chapter with end == start in the ID3 TOC."""
+    import inspect
+
+    from app import tts
+
+    src = inspect.getsource(tts.synthesize_blocks)
+    appended = src.index("chapters.append")
+    guarded = src.index("if not has_speech(chunk)")
+    assert guarded < appended, "chapter must open only after a speakable chunk"
