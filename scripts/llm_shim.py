@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import ipaddress
+import json
 import logging
 import logging.handlers
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -84,6 +86,78 @@ def _is_local(host: str) -> bool:
     return ip.is_loopback or ip in ipaddress.ip_network("172.16.0.0/12")
 
 
+_URL_RE = re.compile(r"https?://[^\s\"'\)\]<>,]+")
+
+
+def parse_stream_json(raw: str) -> tuple[str, list[dict]]:
+    """Pull the final answer and the searches that produced it out of a
+    `--output-format stream-json` transcript.
+
+    Why this exists: for thirteen episodes the digest prompt asked the model to
+    "use web search to earn that length" and nothing anywhere recorded whether
+    it ever did. A 462-word script grown from 238 characters of feed text is
+    either well-researched or confabulated, and the two were indistinguishable
+    after the fact. Now the queries and the URLs they returned are part of the
+    episode's provenance.
+
+    Returns (text, searches); searches is [] when the model answered without
+    looking anything up — which is itself the signal worth recording.
+    """
+    text_parts: list[str] = []
+    result_text = ""
+    searches: list[dict] = []
+    by_id: dict[str, dict] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue  # a stray non-JSON line must not lose us the whole reply
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "result" and isinstance(event.get("result"), str):
+            result_text = event["result"]
+        elif kind == "assistant":
+            for block in event.get("message", {}).get("content", []) or []:
+                if block.get("type") == "text":
+                    text_parts.append(block.get("text", ""))
+                elif block.get("type") == "tool_use" and block.get("name") in (
+                        "WebSearch", "WebFetch"):
+                    inp = block.get("input") or {}
+                    entry = {
+                        "tool": block["name"],
+                        "query": str(inp.get("query") or inp.get("url") or "")[:200],
+                        "urls": [],
+                    }
+                    if block.get("id"):
+                        by_id[block["id"]] = entry
+                    searches.append(entry)
+        elif kind == "user":
+            for block in event.get("message", {}).get("content", []) or []:
+                if block.get("type") != "tool_result":
+                    continue
+                entry = by_id.get(block.get("tool_use_id", ""))
+                if entry is None:
+                    continue
+                content = block.get("content")
+                if not isinstance(content, str):
+                    content = json.dumps(content)
+                seen: list[str] = []
+                for url in _URL_RE.findall(content):
+                    if url not in seen:
+                        seen.append(url)
+                    if len(seen) >= 10:  # provenance, not a crawl log
+                        break
+                entry["urls"] = seen
+    # The `result` event carries the final answer verbatim; the assistant text
+    # blocks are the fallback for a transcript that ended without one.
+    text = (result_text or "\n".join(t for t in text_parts if t)).strip()
+    return text, searches[:20]
+
+
 async def _run_cli(cmd: list[str], *, kind: str, model: str, prompt_chars: int,
                    timeout: int, env: dict | None = None) -> str:
     """Spawn the claude CLI, timing the call and logging the outcome.
@@ -130,12 +204,26 @@ async def complete(request: Request):
     tools = data.get("allowed_tools") or []
     if tools:  # e.g. ["WebSearch"] — nothing else is ever granted
         cmd += ["--allowedTools", ",".join(str(t) for t in tools)]
+        # Only tool-granting calls pay for the richer transcript: plain text is
+        # the proven path for the dozens of tool-less calls per episode, and
+        # searches are the only thing we need the transcript to tell us.
+        cmd += ["--output-format", "stream-json", "--verbose"]
     env = dict(os.environ)
     if data.get("thinking"):
         env["MAX_THINKING_TOKENS"] = str(data.get("thinking_tokens") or 10000)
-    text = await _run_cli(cmd, kind="complete", model=model,
-                          prompt_chars=len(prompt), timeout=600, env=env)
-    return {"text": text}
+    raw = await _run_cli(cmd, kind="complete", model=model,
+                         prompt_chars=len(prompt), timeout=600, env=env)
+    if not tools:
+        return {"text": raw, "searches": None}
+    text, searches = parse_stream_json(raw)
+    if not text:
+        # A transcript we could not read is worse than no transcript: fail loudly
+        # rather than hand back an empty script for the caller to narrate.
+        log.error("complete: stream-json transcript yielded no text (%d raw chars)", len(raw))
+        raise HTTPException(status_code=502, detail="unparseable stream-json transcript")
+    log.info("complete searched %d time(s) (%d urls) for a %d-char reply",
+             len(searches), sum(len(x["urls"]) for x in searches), len(text))
+    return {"text": text, "searches": searches}
 
 
 @app.post("/v1/vision")

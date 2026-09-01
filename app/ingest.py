@@ -609,8 +609,11 @@ def _source_cover(source: SourceDef) -> bytes | None:
         return None
 
 
-def _image_marker(caption: str, description: str, n: int, language: str) -> str:
-    detail = description or caption
+def _image_marker(description: str, n: int, language: str) -> str:
+    """The app's own line about an image. The article's caption is NOT folded in
+    here any more — it gets its own spoken block in the narrator's voice, so
+    borrowing it as a fallback would read it twice."""
+    detail = description
     if language == "da":
         return f"Her er et billede. {detail}" if detail else \
             f"Artiklen har et billede her, nummer {n}. Se episodens shownotes."
@@ -752,10 +755,19 @@ def _build_blocks(title: str, intro: str, segments: list[dict], main_voice: str,
             else:
                 blocks.append({
                     "voice": describer_voice,
-                    "text": _image_marker(caption, seg["description"], n, language),
+                    "text": _image_marker(seg["description"], n, language),
                     "chapter": chapter,
                 })
                 used += len(seg["description"])
+            # The article's own caption, read in the article's own voice. The
+            # describer is the app talking; the caption is the publication
+            # talking, so it does not belong to the describer (voices.py:154).
+            if caption:
+                spoken = scrub_light(caption)
+                cue = "Billedtekst: " if language == "da" else "Caption: "
+                blocks.append({"voice": main_voice, "text": f"{cue}{spoken}",
+                               "chapter": None})
+                used += len(spoken)
     flush()
     return blocks, images
 

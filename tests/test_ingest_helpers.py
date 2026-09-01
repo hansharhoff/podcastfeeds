@@ -777,3 +777,75 @@ def test_a_page_with_neither_shape_yields_no_rows():
     from app.ingest import _next_flight_rows
 
     assert _next_flight_rows("<html><body>nothing here</body></html>") == []
+
+
+# ── Image captions ───────────────────────────────────────────────────────
+# The article's caption used to be a fallback that the describer read only when
+# vision produced no description — so with vision working, which is nearly
+# always, the caption was never heard at all.
+
+def _image_blocks(caption, analysis, language="en"):
+    from app.ingest import _build_blocks
+
+    seg = {"type": "image", "src": "s1", "caption": caption}
+    blocks, _ = _build_blocks(
+        title="T", intro="Intro.", segments=[seg],
+        main_voice="MAIN", quote_voice="QUOTE", describer_voice="DESC",
+        language=language, max_chars=None,
+        images_meta={"s1": {"analysis": analysis, "jpeg": None}},
+        speaker_voice=lambda name: "SPK",
+    )
+    return blocks[1:]  # drop the intro block
+
+
+def test_caption_is_spoken_in_the_article_voice_after_the_description():
+    blocks = _image_blocks(
+        "Mette Frederiksen outside Christiansborg",
+        {"kind": "image", "description": "A woman speaks at a podium."},
+    )
+    assert [b["voice"] for b in blocks] == ["DESC", "MAIN"]
+    assert blocks[0]["text"] == "There is an image here. A woman speaks at a podium."
+    # The describer is the app's own narrator; the caption is the publication's
+    # own words, so it is read in the voice narrating the article.
+    assert blocks[1]["text"] == "Caption: Mette Frederiksen outside Christiansborg"
+
+
+def test_caption_is_spoken_in_danish_too():
+    blocks = _image_blocks(
+        "Statsministeren på talerstolen",
+        {"kind": "image", "description": "En kvinde taler."},
+        language="da",
+    )
+    assert blocks[1]["text"] == "Billedtekst: Statsministeren på talerstolen"
+
+
+def test_caption_is_not_read_twice_when_there_is_no_description():
+    """It used to stand in for the description; now that it is spoken on its own
+    it must not also be borrowed as the describer's line."""
+    blocks = _image_blocks("A chart of model releases", {"kind": "image", "description": ""})
+    describer = blocks[0]["text"]
+    assert "A chart of model releases" not in describer
+    assert blocks[-1]["text"] == "Caption: A chart of model releases"
+
+
+def test_no_caption_block_when_the_article_gave_none():
+    blocks = _image_blocks("", {"kind": "image", "description": "A photo of a robot."})
+    assert [b["voice"] for b in blocks] == ["DESC"]
+
+
+def test_text_screenshots_also_get_their_caption_read():
+    blocks = _image_blocks(
+        "The relevant paragraph",
+        {"kind": "text", "description": "d", "text": "Some quoted prose."},
+    )
+    assert blocks[-1]["voice"] == "MAIN"
+    assert blocks[-1]["text"] == "Caption: The relevant paragraph"
+
+
+def test_the_caption_still_titles_the_chapter():
+    blocks = _image_blocks(
+        "Mette Frederiksen outside Christiansborg",
+        {"kind": "image", "description": "A woman speaks at a podium."},
+    )
+    assert blocks[0]["chapter"]["title"] == "Mette Frederiksen outside Christiansborg"
+    assert blocks[1]["chapter"] is None  # an aside must not fragment the chapter list
