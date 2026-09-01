@@ -22,6 +22,13 @@ log = logging.getLogger("podcastfeeds")
 
 LLM_URL = os.environ.get("LLM_URL", "").rstrip("/")
 LLM_MODEL = os.environ.get("LLM_MODEL", "claude-haiku-4-5-20251001")
+# Naming what is in a photo is the one job where the cheap model is
+# measurably weaker: on the same portrait, haiku-4.5 returned "a woman in
+# professional dark business attire ... in front of a red and white flag"
+# where opus named Mette Frederiksen. Landmarks it gets right either way.
+# Defaults to LLM_MODEL — changing it is a real cost decision, so it is a
+# switch rather than an upgrade.
+VISION_MODEL = os.environ.get("VISION_MODEL", "") or LLM_MODEL
 
 # The shim runs one `claude` subprocess per request; concurrent heavy calls
 # (several episodes summarizing / writing Danish segments at once) can exhaust
@@ -40,7 +47,8 @@ def spoken_date(dt, language: str) -> str:
     return dt.strftime("%B %-d, %Y")
 
 
-async def _llm_via_shim(prompt: str, model: str, tools: list[str], thinking: bool) -> str:
+async def _llm_via_shim(prompt: str, model: str, tools: list[str],
+                        thinking: bool) -> tuple[str, dict]:
     async with httpx.AsyncClient(timeout=650) as client:
         resp = await client.post(
             f"{LLM_URL}/v1/complete",
@@ -48,10 +56,13 @@ async def _llm_via_shim(prompt: str, model: str, tools: list[str], thinking: boo
                   "allowed_tools": tools, "thinking": thinking},
         )
         resp.raise_for_status()
-        text = resp.json().get("text", "").strip()
+        payload = resp.json()
+        text = payload.get("text", "").strip()
     if not text:
         raise RuntimeError("LLM shim returned empty text")
-    return text
+    # None means "the shim could not tell us" (a tool-less call); [] means it
+    # told us the model searched for nothing. The distinction is the whole point.
+    return text, {"searches": payload.get("searches")}
 
 
 async def _llm_via_cli(prompt: str, model: str, tools: list[str], thinking: bool) -> str:
@@ -78,9 +89,14 @@ async def _llm_via_cli(prompt: str, model: str, tools: list[str], thinking: bool
     return stdout.decode().strip()
 
 
-async def llm(prompt: str, model: str = "", tools: list[str] | None = None,
-              thinking: bool = False) -> str:
-    """Raises if no LLM backend is available/working."""
+async def llm_with_meta(prompt: str, model: str = "", tools: list[str] | None = None,
+                        thinking: bool = False) -> tuple[str, dict]:
+    """Like llm(), but also returns what the backend can tell us about the call.
+
+    Currently that is {"searches": [...] | None} — the web searches the model
+    actually ran. Only the shim can observe them; the CLI fallback reports None,
+    meaning unknown rather than none.
+    """
     model = model or LLM_MODEL
     tools = tools or []
     async with _llm_lock:
@@ -90,8 +106,15 @@ async def llm(prompt: str, model: str = "", tools: list[str] | None = None,
             except Exception as exc:
                 log.warning("LLM shim failed (%s), trying CLI", exc)
         if shutil.which("claude"):
-            return await _llm_via_cli(prompt, model, tools, thinking)
+            return await _llm_via_cli(prompt, model, tools, thinking), {"searches": None}
     raise RuntimeError("no LLM backend available")
+
+
+async def llm(prompt: str, model: str = "", tools: list[str] | None = None,
+              thinking: bool = False) -> str:
+    """Raises if no LLM backend is available/working."""
+    text, _ = await llm_with_meta(prompt, model, tools, thinking)
+    return text
 
 
 # ── Script scrubbing (TTS-awareness) ─────────────────────────────────────
@@ -327,6 +350,14 @@ VISION_PROMPT = """Analyze this image from an article. Reply with ONLY a JSON ob
   a friend: lead with the takeaway, then give the key figures ROUNDED (e.g. "about
   two-thirds", "roughly one in five") and the main comparison or ratio — do NOT
   recite every cell, category, or exact decimal. Two or three sentences is fine here.
+IDENTIFY WHAT YOU CAN. "Mette Frederiksen speaking outside Christiansborg" tells a
+listener far more than "a politician outside a building", so name the well-known
+people, organisations, landmarks and places you genuinely recognise, and put those
+names in "description". Recognition only — never infer a name from a logo, a jersey,
+a caption, a setting or who the article is probably about. If you are not certain,
+describe the person or place generically instead and say nothing about identity; an
+unnamed description is always better than a wrong name. Do not guess at private
+individuals at all.
 NEVER use a markdown table, pipes (|), or column layout in any field — this is read
 aloud, so write every number and comparison as a spoken sentence. A screenshot of a
 data table is kind "image" (prose takeaway in "description"), NOT kind "text"."""
@@ -341,7 +372,7 @@ async def _vision_via_cli(prompt: str, image: bytes) -> str:
     try:
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", f"First use the Read tool on the image file {path}, then:\n{prompt}",
-            "--model", LLM_MODEL, "--allowedTools", "Read",
+            "--model", VISION_MODEL, "--allowedTools", "Read",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         try:
@@ -376,6 +407,7 @@ async def vision_analyze(image: bytes, language: str) -> dict | None:
                         "prompt": prompt,
                         "image_b64": base64.b64encode(image).decode(),
                         "mime": "image/jpeg",
+                        "model": VISION_MODEL,
                     })
                     resp.raise_for_status()
                     text = resp.json().get("text", "")
@@ -452,6 +484,134 @@ def _extractive_digest(source_name: str, date_str: str, items: list[dict],
     return "\n\n".join(parts)
 
 
+# ── Attribution guard for researched digests ─────────────────────────────
+# The digest prompt asks the model to research an item up to length. Told to do
+# that, it will attribute what it finds to nobody in particular: ep. 572
+# (2026-08-18) grew 168 characters of feed text into four hard statistics —
+# "eighty-seven percent of security professionals…" — sourced entirely to
+# "According to recent reporting". That phrasing satisfies "attribute anything
+# you did find" while being unfalsifiable, so the rule has to name the failure.
+#
+# Deliberately a CLOSED list of vague heads. "According to OpenAI" and
+# "according to the Financial Times" are exactly what we want and must never
+# match — see the negative tests in tests/test_summarize.py.
+_VAGUE_HEAD = (
+    r"(?:recent |new |one |a |some |several |various |industry |the )*"
+    r"(?:reporting|reports|coverage|sources|analysts|experts|observers|"
+    r"researchers|commentators|studies|study|research|data|surveys|survey|"
+    r"estimates|reviewers)"
+)
+_VAGUE_ATTRIBUTION_RE = re.compile(
+    r"(?:"
+    rf"\b(?:according to|per|citing|based on)\s+{_VAGUE_HEAD}\b"
+    r"|\b(?:reportedly|allegedly|supposedly)\b"
+    r"|\b(?:reports?|studies|research|data|surveys?|experts?|analysts?|sources?)\s+"
+    r"(?:show|shows|suggest|suggests|indicate|indicates|say|says|found|find)\b"
+    r"|\bit (?:has been|is|was) (?:widely )?(?:reported|estimated|claimed)\b"
+    r"|\bwidely reported\b"
+    # Danish equivalents — the digest format is language-agnostic.
+    r"|\bifølge\s+(?:nylige\s+|nye\s+|en\s+|nogle\s+)*"
+    r"(?:rapporter|kilder|eksperter|analytikere|forskere|undersøgelser|undersøgelse|data)\b"
+    r"|\bangiveligt\b"
+    r"|\b(?:rapporter|undersøgelser|eksperter|analytikere|kilder)\s+"
+    r"(?:viser|tyder|siger|angiver)\b"
+    r")",
+    re.I,
+)
+
+# Coarse on purpose: this only decides whether to RECORD that a researched-
+# sounding figure appeared, never whether to change the script.
+_FIGURE_RE = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s*(?:%|percent|procent|million|billion|milliard|millioner|milliarder)\b"
+    r"|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty|"
+    r"forty|fifty|sixty|seventy|eighty|ninety|hundred)[- ]?(?:\w+[- ]?)?\s*"
+    r"(?:percent|procent|million|billion)\b",
+    re.I,
+)
+
+
+def vague_attributions(script: str) -> list[str]:
+    """Phrases that credit a claim to nobody checkable. Empty list is the pass."""
+    return [m.group(0) for m in _VAGUE_ATTRIBUTION_RE.finditer(script)]
+
+
+def has_figures(script: str) -> bool:
+    """True when the script states percentages or magnitudes out loud."""
+    return bool(_FIGURE_RE.search(script))
+
+
+async def _repair_vague_attribution(script: str, language: str) -> str:
+    """One corrective pass over unnamed attributions; the script is kept as-is
+    if the repair fails or comes back mangled.
+
+    A prompt rule alone was not enough — ep. 572 broke the previous one — so the
+    output is checked and, when it offends, sent back with the offending phrases
+    quoted at it. Anything still vague after this is recorded in provenance.
+    """
+    offenders = vague_attributions(script)
+    if not offenders:
+        return script
+    lang_name = "Danish" if language == "da" else "English"
+    quoted = ", ".join(f'"{o}"' for o in dict.fromkeys(offenders))
+    prompt = (
+        "The podcast script below credits claims to nobody checkable. These phrases "
+        f"are the problem: {quoted}. For each one, either name the specific "
+        "organisation, publication or document the claim came from, or delete the "
+        "claim entirely — deleting is the right call whenever you cannot name a "
+        "source, and a slightly shorter script is fine. Change nothing else: keep "
+        "every other sentence exactly as written. Never comment on what you changed. "
+        f"The script is in {lang_name}; reply in {lang_name} with ONLY the script.\n\n"
+        f"Script:\n{script}"
+    )
+    try:
+        fixed = (await llm(prompt)).strip()
+    except Exception as exc:
+        log.warning("attribution repair unavailable (%s); keeping original", exc)
+        return script
+    if looks_meta(fixed) or len(fixed) < len(script) * 0.5:
+        # A repair that eats half the episode is a failed repair, not a strict one.
+        log.warning("attribution repair returned %d chars for a %d-char script; keeping original",
+                    len(fixed), len(script))
+        return script
+    remaining = vague_attributions(fixed)
+    log.info("attribution repair: %d vague phrase(s) -> %d", len(offenders), len(remaining))
+    return fixed
+
+
+def _research_provenance(script: str, searches: list[dict] | None,
+                         items: list[dict]) -> dict:
+    """Record what the research actually consisted of, so a later reader can
+    tell a researched digest from a fluent one.
+
+    `searches` is None when the backend could not observe tool use (the CLI
+    fallback) and [] when it observed the model searching for nothing.
+    """
+    prov: dict = {
+        "input_chars": sum(len(strip_html(i.get("summary", ""))) + len(i.get("title", ""))
+                           for i in items),
+        "script_chars": len(script),
+        "vague_attribution": len(vague_attributions(script)),
+    }
+    if searches is None:
+        prov["searches"] = None
+        return prov
+    prov["searches"] = len(searches)
+    prov["search_queries"] = [s.get("query", "") for s in searches][:10]
+    urls: list[str] = []
+    for s_ in searches:
+        for u in s_.get("urls", []):
+            if u not in urls:
+                urls.append(u)
+    prov["search_urls"] = urls[:20]
+    # The signature of the failure this whole change exists to catch: hard
+    # numbers in the script, nothing looked up to get them.
+    if not searches and has_figures(script):
+        log.warning("digest states figures but ran no searches (%d chars in, %d out)",
+                    prov["input_chars"], len(script))
+        prov["unsourced_figures"] = True
+    return prov
+
+
 async def digest_script(source_name: str, date_str: str, items: list[dict],
                         language: str, window: str = "since the last edition",
                         ) -> tuple[str, dict]:
@@ -485,7 +645,15 @@ async def digest_script(source_name: str, date_str: str, items: list[dict],
         # watching thousands of Claude Code sessions" out of a two-line summary.
         "State only what the items or your search results actually support. Never invent "
         "quotes, figures, dates, internal details or claims about what a company observed "
-        "or intended; attribute anything you did find to where it came from. "
+        "or intended. "
+        # "attribute anything you did find to where it came from" was the old rule
+        # and it was met by "According to recent reporting" in front of four
+        # invented-looking statistics (ep. 572). Naming the failure is the fix.
+        "Every figure, statistic or quoted claim must name the specific organisation, "
+        "publication or document it came from, in the sentence that states it. Vague "
+        "attribution is forbidden: never write 'according to recent reporting', 'reports "
+        "suggest', 'studies show', 'experts say', 'reportedly' or anything like them. If "
+        "you cannot name the source, leave the figure out — a shorter script is fine. "
         "Plain text only — no markdown, no "
         "headings, no stage directions, no URLs (say 'the link is in the show notes' if needed); "
         "the text is fed directly to text-to-speech. Start with a one-sentence intro, end with "
@@ -493,11 +661,14 @@ async def digest_script(source_name: str, date_str: str, items: list[dict],
         f"after.\n\nItems:\n{bulletin}"
     )
     try:
-        raw = await llm(prompt, tools=["WebSearch"])
+        raw, meta = await llm_with_meta(prompt, tools=["WebSearch"])
+        raw = await _repair_vague_attribution(raw, language)
         script, scrub = await scrub_script(raw, language)
         if looks_meta(script) or len(script) < 200:
             raise RuntimeError("digest output invalid (meta or too short)")
-        return script, {"generator": "llm", "model": LLM_MODEL, "scrub": scrub}
+        prov = {"generator": "llm", "model": LLM_MODEL, "scrub": scrub}
+        prov.update(_research_provenance(script, meta.get("searches"), items))
+        return script, prov
     except Exception as exc:
         log.warning("digest LLM unavailable/invalid (%s); using extractive fallback", exc)
         script = scrub_regex(_extractive_digest(source_name, date_str, items, language))

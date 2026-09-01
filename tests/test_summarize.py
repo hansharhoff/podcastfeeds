@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime
 
 from app.summarize import (
@@ -9,6 +10,22 @@ from app.summarize import (
     scrub_regex,
     spoken_date,
 )
+
+
+@contextlib.contextmanager
+def _stub_llm(module, fake, searches=None):
+    """Stub BOTH llm() and llm_with_meta(); digest_script uses the latter and an
+    unpatched test would otherwise reach the live backend."""
+    async def fake_with_meta(prompt, model="", tools=None, thinking=False):
+        return await fake(prompt, model, tools, thinking), {"searches": searches}
+
+    old_llm, old_meta = module.llm, module.llm_with_meta
+    module.llm, module.llm_with_meta = fake, fake_with_meta
+    try:
+        yield
+    finally:
+        module.llm, module.llm_with_meta = old_llm, old_meta
+
 
 # The exact table that ep. 232 read aloud verbatim (pipes and all).
 EP232_TABLE = (
@@ -162,14 +179,10 @@ def test_digest_prompt_states_the_period_it_covers():
         seen.setdefault("tools", tools)
         return "A spoken script. " * 40
 
-    old = summarize.llm
-    summarize.llm = fake_llm
-    try:
+    with _stub_llm(summarize, fake_llm):
         asyncio.get_event_loop().run_until_complete(summarize.digest_script(
             "AI Announcements", "August 15th, 2026",
             [{"title": "T", "summary": "S"}], "en", window="the last 24 hours"))
-    finally:
-        summarize.llm = old
 
     assert "the last 24 hours" in seen["prompt"]
     assert "never describe it as any other span of time" in seen["prompt"]
@@ -211,12 +224,197 @@ def test_digest_prompt_forbids_inventing_specifics():
         seen.setdefault("prompt", prompt)
         return "A spoken script. " * 40
 
-    old = summarize.llm
-    summarize.llm = fake_llm
-    try:
+    with _stub_llm(summarize, fake_llm):
         asyncio.get_event_loop().run_until_complete(summarize.digest_script(
             "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
-    finally:
-        summarize.llm = old
 
     assert "Never invent" in seen["prompt"]
+
+
+# ── Attribution guard (ep. 572, 2026-08-18) ──────────────────────────────
+# 168 characters of feed text became a 557-word script asserting that
+# "eighty-seven percent of security professionals" see more AI-driven threats,
+# sourced to "According to recent reporting". The figure may even be real —
+# nothing recorded at the time could tell anyone either way.
+
+VAGUE = [
+    "According to recent reporting, eighty-seven percent of professionals agree.",
+    "According to the data, adoption doubled.",
+    "Reports suggest the rollout slipped.",
+    "The firm reportedly reached external systems through a misconfiguration.",
+    "Studies show adoption is rising.",
+    "Analysts say the market will double.",
+    "It has been widely reported that the launch slipped.",
+    "Ifølge nylige rapporter er tallet steget.",
+    "Virksomheden har angiveligt mistet data.",
+    "Undersøgelser viser, at tilliden falder.",
+]
+
+# The guard must leave real attribution alone. Widening it until these trip is
+# how it stops being a guard and starts being a rewrite.
+NAMED = [
+    "According to OpenAI, the model ships in October.",
+    "According to the Financial Times, revenue doubled.",
+    "Anthropic reports that usage tripled last quarter.",
+    "The GitHub issue says the feature is opt-out by default.",
+    "A study published by Stanford found the opposite effect.",
+    "Ifølge DR er sagen afgjort.",
+    "The company's own security manifesto puts the figure at twelve percent.",
+    "Reuters and Bloomberg both covered the acquisition.",
+]
+
+
+def test_vague_attribution_is_caught():
+    from app.summarize import vague_attributions
+
+    for line in VAGUE:
+        assert vague_attributions(line), f"missed vague attribution: {line}"
+
+
+def test_named_attribution_is_left_alone():
+    from app.summarize import vague_attributions
+
+    for line in NAMED:
+        assert not vague_attributions(line), f"false positive on: {line}"
+
+
+def test_has_figures_finds_spoken_and_written_numbers():
+    from app.summarize import has_figures
+
+    assert has_figures("eighty-seven percent of security professionals")
+    assert has_figures("roughly 94 percent of organizations")
+    assert has_figures("a 2.5 billion dollar round")
+    assert has_figures("omkring 40 procent af virksomhederne")
+    assert not has_figures("The company shipped a new model this week.")
+
+
+def test_digest_prompt_forbids_vague_attribution_by_name():
+    """The old rule ("attribute anything you did find") was satisfied by
+    "According to recent reporting". The new one names the failure."""
+    import asyncio
+
+    from app import summarize
+
+    seen = {}
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        seen.setdefault("prompt", prompt)
+        return "A spoken script. " * 40
+
+    with _stub_llm(summarize, fake_llm):
+        asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert "according to recent reporting" in seen["prompt"].lower()
+    assert "leave the figure out" in seen["prompt"]
+
+
+def test_digest_records_the_searches_it_actually_ran():
+    import asyncio
+
+    from app import summarize
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        return "A spoken script about models. " * 30
+
+    searches = [{"tool": "WebSearch", "query": "claude code session urls",
+                 "urls": ["https://github.com/anthropics/claude-code/issues/66504"]}]
+    with _stub_llm(summarize, fake_llm, searches=searches):
+        _, prov = asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert prov["searches"] == 1
+    assert prov["search_queries"] == ["claude code session urls"]
+    assert prov["search_urls"] == ["https://github.com/anthropics/claude-code/issues/66504"]
+    assert prov["input_chars"] == 2  # "T" + "S" — the whole basis for the script
+
+
+def test_digest_flags_figures_that_no_search_supports():
+    """The signature of the failure: hard numbers in, nothing looked up."""
+    import asyncio
+
+    from app import summarize
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        return "Eighty-seven percent of teams now use it. " * 20
+
+    with _stub_llm(summarize, fake_llm, searches=[]):
+        _, prov = asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert prov["searches"] == 0
+    assert prov["unsourced_figures"] is True
+
+
+def test_unknown_search_count_is_not_reported_as_zero():
+    """The CLI fallback cannot observe tool use. None means unknown; recording
+    it as 0 would frame every fallback digest as unresearched."""
+    import asyncio
+
+    from app import summarize
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        return "Eighty-seven percent of teams now use it. " * 20
+
+    with _stub_llm(summarize, fake_llm, searches=None):
+        _, prov = asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert prov["searches"] is None
+    assert "unsourced_figures" not in prov
+
+
+def test_vague_attribution_triggers_a_repair_pass():
+    import asyncio
+
+    from app import summarize
+
+    calls = []
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        calls.append(prompt)
+        if "credits claims to nobody checkable" in prompt:
+            return "The Verge reports that eighty-seven percent of teams use it. " * 20
+        if "final editor" in prompt:  # scrub pass: echo back what it was handed
+            return prompt.split("Script:\n", 1)[1]
+        return "According to recent reporting, eighty-seven percent of teams use it. " * 20
+
+    with _stub_llm(summarize, fake_llm, searches=[]):
+        script, prov = asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert any("credits claims to nobody checkable" in c for c in calls), "no repair pass ran"
+    assert "According to recent reporting" not in script
+    assert prov["vague_attribution"] == 0
+
+
+def test_a_repair_that_guts_the_script_is_discarded():
+    """Deleting an unattributable claim is right; deleting the episode is not."""
+    import asyncio
+
+    from app import summarize
+
+    original = "According to recent reporting, teams use it. " * 20
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        if "credits claims to nobody checkable" in prompt:
+            return "Teams use it."
+        if "final editor" in prompt:  # scrub pass: echo back what it was handed
+            return prompt.split("Script:\n", 1)[1]
+        return original
+
+    with _stub_llm(summarize, fake_llm, searches=[]):
+        script, prov = asyncio.new_event_loop().run_until_complete(summarize.digest_script(
+            "AI Announcements", "d", [{"title": "T", "summary": "S"}], "en"))
+
+    assert "According to recent reporting" in script
+    assert prov["vague_attribution"] > 0  # kept, and recorded as still offending
+
+
+def test_vision_prompt_asks_for_names_but_forbids_guessing():
+    from app.summarize import VISION_PROMPT
+
+    prompt = VISION_PROMPT.format(lang_name="English")
+    assert "IDENTIFY WHAT YOU CAN" in prompt
+    assert "never infer a name" in prompt
+    assert "wrong name" in prompt
