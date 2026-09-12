@@ -16,6 +16,9 @@ services:
       - TOKEN=${TOKEN:-}
       # LLM shim on the host (scripts/llm_shim.py) for rephrased digests/summaries:
       - LLM_URL=${LLM_URL:-http://host.docker.internal:8765}
+      # Vision model for image captioning; defaults to LLM_MODEL (haiku) when unset.
+      # A real cost decision — see app/summarize.py's VISION_MODEL comment.
+      - VISION_MODEL=${VISION_MODEL:-}
       # ElevenLabs TTS (per-source opt-in; hard monthly char cap):
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - ELEVENLABS_CHAR_BUDGET=${ELEVENLABS_CHAR_BUDGET:-1000000}
