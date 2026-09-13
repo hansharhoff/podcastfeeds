@@ -8,7 +8,13 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from .config import load_config
-from .ingest import build_digest, cleanup_old_episodes, poll_breaking, poll_rss_source
+from .ingest import (
+    build_digest,
+    cleanup_old_episodes,
+    cleanup_orphaned_media,
+    poll_breaking,
+    poll_rss_source,
+)
 
 log = logging.getLogger("podcastfeeds")
 
@@ -40,6 +46,12 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler.add_job(
         cleanup_old_episodes, CronTrigger.from_crontab("15 4 * * *", timezone="Europe/Copenhagen"),
         args=[config.retention_days], id="cleanup",
+    )
+
+    # Redo never unlinks the file it replaces — sweep for the residue daily.
+    scheduler.add_job(
+        cleanup_orphaned_media, CronTrigger.from_crontab("20 4 * * *", timezone="Europe/Copenhagen"),
+        id="cleanup-media",
     )
 
     from .ticktick import poll_ticktick
