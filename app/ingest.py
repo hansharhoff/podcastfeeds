@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
@@ -1500,4 +1501,31 @@ async def cleanup_old_episodes(retention_days: int) -> int:
         s.commit()
     if removed:
         log.info("cleanup: removed %d episodes older than %d days", removed, retention_days)
+    return removed
+
+
+async def cleanup_orphaned_media(min_age_seconds: int = 3600) -> int:
+    """Delete media files no episode's audio_file points to.
+
+    Redo never unlinks the file it replaces (it just overwrites audio_file
+    with the new one), so every redo leaves its old mp3 behind. Files younger
+    than min_age_seconds are left alone — synthesize() writes the file before
+    the DB commit that references it, and a sweep landing in that gap would
+    delete audio a listener is about to be served.
+    """
+    if not MEDIA_DIR.is_dir():
+        return 0
+    with db.session() as s:
+        referenced = {row for row in s.exec(select(Episode.audio_file)).all() if row}
+    cutoff = time.time() - min_age_seconds
+    removed = 0
+    for path in MEDIA_DIR.iterdir():
+        if not path.is_file() or path.name in referenced:
+            continue
+        if path.stat().st_mtime >= cutoff:
+            continue
+        path.unlink(missing_ok=True)
+        removed += 1
+    if removed:
+        log.info("cleanup: removed %d orphaned media files", removed)
     return removed

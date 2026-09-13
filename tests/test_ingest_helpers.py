@@ -1,14 +1,18 @@
 import asyncio
 import json
+import os
+import time
 
 from app import db
-from app.config import SourceDef, load_config
+from app.config import MEDIA_DIR, SourceDef, load_config
+from app.db import Episode
 from app.ingest import (
     _attr,
     _entry_audio,
     _entry_guid,
     _norm_title,
     _substack_fetch_url,
+    cleanup_orphaned_media,
 )
 
 
@@ -849,3 +853,38 @@ def test_the_caption_still_titles_the_chapter():
     )
     assert blocks[0]["chapter"]["title"] == "Mette Frederiksen outside Christiansborg"
     assert blocks[1]["chapter"] is None  # an aside must not fragment the chapter list
+
+
+def test_cleanup_orphaned_media_removes_unreferenced_old_files():
+    """The residue every redo leaves behind: the old audio_file is never
+    unlinked when process_episode overwrites the DB row with the new one."""
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    kept = MEDIA_DIR / "kept.mp3"
+    orphan = MEDIA_DIR / "orphan.mp3"
+    kept.write_bytes(b"kept")
+    orphan.write_bytes(b"orphan")
+    old = time.time() - 7200
+    os.utime(orphan, (old, old))
+
+    with db.session() as s:
+        s.add(Episode(source_slug="x", guid="cleanup-1", title="t", audio_file="kept.mp3"))
+        s.commit()
+
+    removed = _run(cleanup_orphaned_media(min_age_seconds=3600))
+
+    assert removed == 1
+    assert kept.exists()
+    assert not orphan.exists()
+
+
+def test_cleanup_orphaned_media_leaves_recently_written_files_alone():
+    """A file can land on disk moments before the DB commit that references
+    it; a sweep must not win that race and delete audio about to be served."""
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    fresh = MEDIA_DIR / "fresh.mp3"
+    fresh.write_bytes(b"fresh")
+
+    removed = _run(cleanup_orphaned_media(min_age_seconds=3600))
+
+    assert removed == 0
+    assert fresh.exists()
