@@ -1197,7 +1197,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 try:
                     from .summarize import danish_perspective
 
-                    dk_text, dk_prov = await danish_perspective(title, body, language)
+                    with db.session() as s:
+                        recent = recent_dk_claims(s, exclude_id=ep_id)
+                    dk_text, dk_prov = await danish_perspective(
+                        title, body, language, recent_claims=recent)
                     dk_voice = assign_voice(f"danish-perspective:{language}", language)
                     blocks.append({
                         "voice": dk_voice, "text": dk_text,
@@ -1330,6 +1333,41 @@ async def _enrich_items(items: list[dict], min_summary: int = 120) -> None:
                 log.warning("digest enrich failed for %s: %s", item.get("link"), exc)
 
     await asyncio.gather(*(enrich(i) for i in items))
+
+
+def recent_dk_claims(session, days: int = 7, limit: int = 60,
+                     exclude_id: int | None = None) -> list[str]:
+    """Sourced claims the Danish-perspective segment already made this week.
+
+    Global across sources and rolling rather than calendar: the same Danmarks
+    Statistik AI-adoption figure turned up in 14 of 45 days of episodes, twice
+    on some days and across different blogs (eps. 793 and 800, hours apart).
+    Newest first, so the cap drops the oldest claims rather than this morning's.
+
+    `exclude_id` is the episode being (re)generated. A redo leaves the previous
+    provenance in place until process_episode rewrites it at the end, so without
+    this the new segment is forbidden from reusing its own figures.
+    """
+    cutoff = utcnow() - timedelta(days=days)
+    query = select(Episode.provenance).where(Episode.created_at >= cutoff)
+    if exclude_id is not None:
+        query = query.where(Episode.id != exclude_id)
+    # Ordered by the same column the window filters on; id only breaks ties.
+    rows = session.exec(
+        query.order_by(Episode.created_at.desc(), Episode.id.desc())
+    ).all()
+    claims: list[str] = []
+    for prov in rows:
+        if not prov or "dk_claims" not in prov:
+            continue
+        try:
+            recorded = json.loads(prov).get("dk_claims") or []
+        except ValueError:
+            continue
+        for claim in recorded:
+            if isinstance(claim, str) and claim and claim not in claims:
+                claims.append(claim)
+    return claims[:limit]
 
 
 def _digest_window(cutoff: datetime, now: datetime, language: str) -> str:

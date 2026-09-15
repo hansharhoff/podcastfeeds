@@ -315,6 +315,81 @@ def test_tweet_text_drops_bare_urls():
     assert segments[0]["text"] == "Ann on X: read this now."
 
 
+def test_tweet_markup_is_not_narrated():
+    # ep 937 read 'span class tweet-fake-link' aloud: Substack ships full_text
+    # as markup. The URL strip then ate the href value out of the middle of the
+    # <a>, leaving a dangling 'href="' — so tags must go BEFORE bare URLs do.
+    from app.extract import segments_from_clean_html
+    attrs = (
+        '{"full_text":"w/ <span class=\\"tweet-fake-link\\">@holly</span>. '
+        '<a class=\\"tweet-url\\" href=\\"https://t.co/abc\\">link</a>",'
+        '"name":"Alex"}'
+    )
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    text = segments[0]["text"]
+    assert "<" not in text and ">" not in text
+    assert "href" not in text and "tweet-fake-link" not in text
+    assert "@holly" in text
+
+
+def test_tweet_link_anchor_text_is_not_narrated():
+    # Twitter renders the link as a truncated URL in the anchor TEXT, which
+    # survives the tag strip and reads as "x dot com slash i slash web slash".
+    # Schemeless links are dropped like real ones (this path drops, not
+    # _spoken_domain's "keep the host" — a tweet's t.co link carries no words).
+    from app.extract import segments_from_clean_html
+    attrs = (
+        '{"full_text":"see <a class=\\"tweet-url\\" href=\\"https://t.co/Xy7\\">'
+        'x.com/i/web/status/1</a>","name":"Ann"}'
+    )
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: see."
+
+
+def test_tweet_bare_domain_and_ratio_survive():
+    # Only host+PATH is a link. A bare domain is often the point of the tweet,
+    # and "60/40" must not be mistaken for one.
+    from app.extract import segments_from_clean_html
+    attrs = '{"full_text":"nytimes.com broke it, 60/40 odds","name":"Ann"}'
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: nytimes.com broke it, 60/40 odds."
+
+
+def test_tweet_line_break_tags_become_sentence_breaks():
+    # <br>/<p> ARE the line boundary in Substack's tweet markup. Deleting them
+    # outright glues words ("line oneand line two") and leaves _speakable_tweet
+    # with no lines left to turn into sentences.
+    from app.extract import segments_from_clean_html
+    attrs = '{"full_text":"line one<br>line two","name":"Ann"}'
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: line one. line two."
+
+
+def test_tweet_comparison_prose_is_not_mistaken_for_markup():
+    # "a", "b", "i" and "p" are real tag names AND ordinary variable names, so
+    # an inequality looks exactly like a tag. Real attributes carry "=";
+    # prose does not.
+    from app.extract import segments_from_clean_html
+    attrs = '{"full_text":"if a <b and c> d then stop","name":"Ann"}'
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: if a <b and c> d then stop."
+
+
+def test_tweet_angle_bracket_prose_is_kept():
+    # ep 700 narrates "<solved this problem>" — real prose, not markup. Only
+    # known HTML tag names are stripped, so a blanket <[^>]+> can't eat it.
+    from app.extract import segments_from_clean_html
+    attrs = '{"full_text":"they <solved this problem> last year","name":"Ann"}'
+    html_ = f'<div class="twitter-embed" data-attrs=\'{attrs}\'></div>'
+    _, segments = segments_from_clean_html(html_)
+    assert segments[0]["text"] == "Ann on X: they <solved this problem> last year."
+
+
 def test_textless_tweet_embed_is_skipped():
     from app.extract import segments_from_clean_html
     html = '<div class="twitter-embed" data-attrs=\'{"username":"x"}\'></div>'

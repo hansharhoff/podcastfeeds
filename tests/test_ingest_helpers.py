@@ -3,6 +3,8 @@ import json
 import os
 import time
 
+import pytest
+
 from app import db
 from app.config import MEDIA_DIR, SourceDef, load_config
 from app.db import Episode
@@ -888,3 +890,84 @@ def test_cleanup_orphaned_media_leaves_recently_written_files_alone():
 
     assert removed == 0
     assert fresh.exists()
+
+
+# ── Danish-perspective claim cooldown (see tests/test_summarize.py) ──────
+# The ledger is global across sources and rolling, not calendar: you hear
+# thezvi and garymarcus the same morning (eps. 793/800 repeated the same
+# figure hours apart), and a Monday reset would let Sunday and Monday repeat.
+
+def _dk_episode(slug, claims, age_days=0):
+    from datetime import timedelta
+
+    from app.db import utcnow
+    return Episode(
+        source_slug=slug, guid=f"g:{slug}:{age_days}", title="t",
+        status="ready", provenance=json.dumps({"dk_claims": claims}),
+        created_at=utcnow() - timedelta(days=age_days),
+    )
+
+
+@pytest.fixture
+def dk_ledger():
+    """An empty episode table: the claim ledger is a query over ALL episodes,
+    so rows left behind by other tests are indistinguishable from real ones."""
+    from sqlmodel import delete
+    with db.session() as s:
+        s.exec(delete(Episode))
+        s.commit()
+        yield s
+
+
+def test_recent_dk_claims_spans_sources_and_drops_stale_ones(dk_ledger):
+    from app.ingest import recent_dk_claims
+
+    dk_ledger.add(_dk_episode("thezvi", ["DST | AI adoption | 42% in 2025"], age_days=0))
+    dk_ledger.add(_dk_episode("garymarcus", ["Eurostat | EU average | 20%"], age_days=6))
+    dk_ledger.add(_dk_episode("slowboring", ["DST | house prices | +6.8%"], age_days=9))
+    dk_ledger.commit()
+
+    claims = recent_dk_claims(dk_ledger, days=7)
+    assert "DST | AI adoption | 42% in 2025" in claims
+    assert "Eurostat | EU average | 20%" in claims
+    assert "DST | house prices | +6.8%" not in claims  # outside the window
+
+
+def test_recent_dk_claims_deduplicates_and_caps(dk_ledger):
+    from app.ingest import recent_dk_claims
+
+    for n in range(3):
+        dk_ledger.add(_dk_episode(f"dup{n}", ["DST | AI adoption | 42% in 2025"]))
+    dk_ledger.commit()
+
+    claims = recent_dk_claims(dk_ledger, days=7)
+    assert claims.count("DST | AI adoption | 42% in 2025") == 1
+    assert recent_dk_claims(dk_ledger, days=7, limit=0) == []
+
+
+def test_recent_dk_claims_excludes_the_episode_being_regenerated(dk_ledger):
+    # A redo leaves the old provenance in place until process_episode rewrites
+    # it at the very end, so without this the segment is forbidden from reusing
+    # its OWN figures — and a redo is how Hans asks for a better take.
+    from app.ingest import recent_dk_claims
+
+    ep = _dk_episode("redone", ["DST | AI adoption | 42% in 2025"])
+    dk_ledger.add(ep)
+    dk_ledger.commit()
+    dk_ledger.refresh(ep)
+
+    assert recent_dk_claims(dk_ledger, exclude_id=ep.id) == []
+    assert recent_dk_claims(dk_ledger) == ["DST | AI adoption | 42% in 2025"]
+
+
+def test_recent_dk_claims_cap_drops_the_oldest_first(dk_ledger):
+    # Inserted so that row id and age DISAGREE: the older episode gets the
+    # higher id, so ordering by id would keep exactly the wrong claim.
+    from app.ingest import recent_dk_claims
+
+    dk_ledger.add(_dk_episode("newer", ["NEW | y | 2"], age_days=1))
+    dk_ledger.commit()
+    dk_ledger.add(_dk_episode("older", ["OLD | x | 1"], age_days=5))
+    dk_ledger.commit()
+
+    assert recent_dk_claims(dk_ledger, days=7, limit=1) == ["NEW | y | 2"]

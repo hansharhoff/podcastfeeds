@@ -382,6 +382,28 @@ _NARRATABLE_EMBEDS = ("twitter-embed",)
 
 _URL_RE = re.compile(r"https?://\S+")
 
+# Substack ships a tweet's full_text as MARKUP (mentions wrapped in
+# <span class="tweet-fake-link">, links in <a class="tweet-url">), which was
+# read aloud verbatim (ep. 937). Only real tag names are matched: tweets say
+# things like "they <solved this problem>" and a blanket <[^>]+> eats that.
+#
+# A tag is either bare (<br>, </p>) or carries attributes, and a real attribute
+# has an "=". Without that test "a", "b", "i" and "p" are variable names as
+# often as tag names, and "if a <b and c> d" loses its middle.
+_TAG_BODY = r"(?:\s*/?>|\s+[^<>]*=[^<>]*>)"
+# Break/block tags ARE the line boundary here, and _speakable_tweet turns each
+# line into a sentence. Deleting them outright glues words: "line oneline two".
+_TWEET_BREAK_RE = re.compile(r"</?(?:br|p|div|li)\b" + _TAG_BODY, re.I)
+_TWEET_TAG_RE = re.compile(
+    r"</?(?:span|a|b|i|em|strong|img|sup|sub)\b" + _TAG_BODY, re.I
+)
+
+# The <a>'s anchor TEXT is a truncated schemeless URL ("x.com/i/web/status/1")
+# and survives the tag strip. A PATH is what makes it a link: a bare domain is
+# often the point of the tweet ("nytimes.com broke it"), and "60/40" is not a
+# link at all.
+_TWEET_LINK_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+[a-z]{2,}/\S*", re.I)
+
 
 def _embed_attrs(el) -> dict | None:
     """Decoded data-attrs JSON for a narratable embed div, else None."""
@@ -423,7 +445,12 @@ def _embed_segments(attrs: dict) -> list[dict]:
     # full_text arrives double-escaped (&amp;gt; in the attribute -> &gt; after
     # lxml unescapes it), and bare t.co URLs read terribly aloud.
     text = html.unescape(str(attrs.get("full_text") or "")).strip()
+    # Tags first: the URL strip is greedy (\S+) and would otherwise eat an
+    # href's value out of the middle of its own <a>, leaving `href="` behind.
+    text = _TWEET_BREAK_RE.sub("\n", text)
+    text = _TWEET_TAG_RE.sub("", text)
     text = _URL_RE.sub("", text)
+    text = _TWEET_LINK_RE.sub("", text)
     text = _speakable_tweet(text)
     segments: list[dict] = []
     if text:

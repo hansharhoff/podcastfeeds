@@ -418,3 +418,78 @@ def test_vision_prompt_asks_for_names_but_forbids_guessing():
     assert "IDENTIFY WHAT YOU CAN" in prompt
     assert "never infer a name" in prompt
     assert "wrong name" in prompt
+
+
+# ── Danish-perspective claim cooldown ────────────────────────────────────
+# Danmarks Statistik's AI-adoption figure ("15% in 2023 -> 28% -> 42% in 2025")
+# was recited in 14 of 45 days of episodes, twice on some days. The segment now
+# reports the claims it made so the next week's segments can be told to avoid
+# them.
+
+_DK_SEGMENT = (
+    "And now, the view from Denmark. " + "This is a real Danish segment. " * 20
+)
+
+
+def test_split_claims_separates_trailer_from_spoken_text():
+    from app.summarize import split_claims
+
+    text, claims = split_claims(
+        "Spoken words.\n---CLAIMS---\n"
+        "Danmarks Statistik | Danish firms using AI | 42% in 2025\n"
+        "- Eurostat | EU average firm AI use | 20% in 2025\n"
+    )
+    assert text == "Spoken words."
+    assert claims == [
+        "Danmarks Statistik | Danish firms using AI | 42% in 2025",
+        "Eurostat | EU average firm AI use | 20% in 2025",
+    ]
+
+
+def test_split_claims_tolerates_a_missing_trailer():
+    from app.summarize import split_claims
+
+    assert split_claims("Just the segment.") == ("Just the segment.", [])
+
+
+def test_danish_perspective_records_claims_and_never_narrates_them(monkeypatch):
+    import asyncio
+
+    from app import summarize
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        if "final editor" in prompt:  # scrub pass: echo back what it was handed
+            return prompt.split("Script:\n", 1)[1]
+        return (_DK_SEGMENT + "\n---CLAIMS---\n"
+                "Danmarks Statistik | Danish firms using AI | 42% in 2025")
+
+    with _stub_llm(summarize, fake_llm):
+        segment, prov = asyncio.new_event_loop().run_until_complete(
+            summarize.danish_perspective("T", "body", "en"))
+
+    assert "---CLAIMS---" not in segment
+    assert "Danmarks Statistik" not in segment
+    assert prov["dk_claims"] == [
+        "Danmarks Statistik | Danish firms using AI | 42% in 2025"]
+
+
+def test_danish_perspective_forbids_last_weeks_claims_in_the_prompt():
+    import asyncio
+
+    from app import summarize
+
+    seen = {}
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        if "final editor" in prompt:
+            return prompt.split("Script:\n", 1)[1]
+        seen["prompt"] = prompt
+        return _DK_SEGMENT
+
+    with _stub_llm(summarize, fake_llm):
+        asyncio.new_event_loop().run_until_complete(summarize.danish_perspective(
+            "T", "body", "en",
+            recent_claims=["Danmarks Statistik | Danish firms using AI | 42% in 2025"]))
+
+    assert "Danmarks Statistik | Danish firms using AI | 42% in 2025" in seen["prompt"]
+    assert "Do not restate" in seen["prompt"]
