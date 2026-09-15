@@ -435,13 +435,52 @@ async def vision_analyze(image: bytes, language: str) -> dict | None:
 
 DANISH_PERSPECTIVE_MODEL = os.environ.get("DK_MODEL", "claude-opus-4-8")
 
+# The segment's own record of what it sourced, appended after the spoken text.
+# Stripped before TTS — it exists so the NEXT week's segments can be told what
+# has already been said.
+CLAIMS_DELIM = "---CLAIMS---"
 
-async def danish_perspective(title: str, body: str, language: str) -> tuple[str, dict]:
+
+def split_claims(raw: str) -> tuple[str, list[str]]:
+    """Split a segment from its machine-readable claims trailer.
+
+    Splits on the FIRST delimiter: everything after it is the trailer, whatever
+    shape it arrived in, because the one unacceptable outcome is a stray
+    '---CLAIMS---' being read aloud."""
+    head, delim, tail = raw.partition(CLAIMS_DELIM)
+    if not delim:
+        return raw.strip(), []
+    claims = [ln.strip().lstrip("-•*").strip() for ln in tail.splitlines()]
+    return head.strip(), [c for c in claims if c]
+
+
+async def danish_perspective(title: str, body: str, language: str,
+                             recent_claims: list[str] | None = None,
+                             ) -> tuple[str, dict]:
     """1-2 minute 'view from Denmark' segment for a blog-post episode:
     is this a US-only issue, and what does the Danish data/situation say?
+
+    `recent_claims` is what the last week of segments already said — the same
+    Danmarks Statistik AI-adoption figure came round 14 times in 45 days.
     Returns (segment_text, provenance-fragment); raises on failure/meta."""
     lang_name = "Danish" if language == "da" else "English"
     opening = "Set fra Danmark." if language == "da" else "And now, the view from Denmark."
+    # Banned at the level of the CLAIM, not the source: Danmarks Statistik is
+    # the only body with Danish housing or inflation figures, so barring the
+    # institution for a week would cost real material. Barring the restatement
+    # costs nothing.
+    cooldown = ""
+    if recent_claims:
+        cooldown = (
+            "These claims were already used in episodes this past week. Do not restate "
+            "any of them — not attributed to a different source, not reworded, and not "
+            "with an updated or differently-rounded figure. Find different material, or "
+            # An unqualified "write a shorter segment" is an invitation to fall
+            # below the 400-char floor below, which drops the segment entirely —
+            # most likely late in the week, when the ledger is longest.
+            "write a shorter segment, but never fewer than 100 words:\n"
+            + "\n".join(f"- {c}" for c in recent_claims) + "\n\n"
+        )
     prompt = (
         f"You are a segment writer for a podcast episode narrating the blog post below. "
         f"Write a short closing segment in {lang_name} (150-250 spoken words, about 1-2 "
@@ -452,16 +491,30 @@ async def danish_perspective(title: str, body: str, language: str) -> tuple[str,
         "Statistik, ministry data, recent coverage); prefer a verified number over a "
         "remembered one, and where you can't verify, say so plainly rather than "
         "inventing numbers. Plain text read aloud verbatim by TTS: no markdown, no "
-        "headings, no URLs, no citation brackets, no framing before or after. Begin "
-        f"with exactly: '{opening}'\n\n"
+        "headings, no URLs, no citation brackets, and no framing around the segment "
+        f"beyond the trailer described below. Begin with exactly: '{opening}'\n\n"
+        f"{cooldown}"
+        f"After the segment, on a line of its own, write exactly '{CLAIMS_DELIM}' "
+        "followed by one line per sourced factual claim you made, as "
+        "'source | what it measures | figure'. That trailer is stripped before the "
+        "audio is made and is never read aloud.\n\n"
         f"Blog post: {title}\n\n{body[:16000]}"
     )
-    raw = await llm(prompt, model=DANISH_PERSPECTIVE_MODEL,
-                    tools=["WebSearch"], thinking=True)
+    raw, meta = await llm_with_meta(prompt, model=DANISH_PERSPECTIVE_MODEL,
+                                    tools=["WebSearch"], thinking=True)
+    raw, claims = split_claims(raw)
     segment, scrub = await scrub_script(raw, language)
+    # Belt and braces: the scrub pass is an LLM too, and a delimiter that
+    # survives into the audio is the one failure the listener would hear.
+    segment, leaked = split_claims(segment)
     if looks_meta(segment) or not (400 <= len(segment) <= 2600):
         raise RuntimeError(f"danish perspective invalid ({len(segment)} chars)")
-    return segment, {"dk_model": DANISH_PERSPECTIVE_MODEL, "dk_scrub": scrub}
+    searches = meta.get("searches")
+    return segment, {
+        "dk_model": DANISH_PERSPECTIVE_MODEL, "dk_scrub": scrub,
+        "dk_claims": claims or leaked,
+        "dk_searches": None if searches is None else len(searches),
+    }
 
 
 # ── Digests ──────────────────────────────────────────────────────────────
