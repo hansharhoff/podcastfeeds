@@ -493,3 +493,152 @@ def test_danish_perspective_forbids_last_weeks_claims_in_the_prompt():
 
     assert "Danmarks Statistik | Danish firms using AI | 42% in 2025" in seen["prompt"]
     assert "Do not restate" in seen["prompt"]
+
+
+# ── Unqualified firm-share figures ───────────────────────────────────────
+# 12% and 15% are BOTH real Danmarks Statistik figures for 2023: 15% is all
+# firms with 10+ employees, 12% is the 10-49 band. The model read the right
+# table and dropped the row label, so episodes contradicted each other for
+# weeks. A share of a FIRM population is meaningless without the size band
+# and the year.
+
+def test_unqualified_firm_share_is_flagged():
+    from app.summarize import unqualified_firm_shares
+
+    # ep. 299, verbatim.
+    offenders = unqualified_firm_shares(
+        "According to Danmarks Statistik, the share of Danish companies using "
+        "artificial intelligence jumped from twelve percent in 2023 to forty-two "
+        "percent in 2025.")
+    assert len(offenders) == 1
+
+
+def test_firm_share_with_size_band_and_year_passes():
+    from app.summarize import unqualified_firm_shares
+
+    assert unqualified_firm_shares(
+        "In 2025, about 75 percent of Danish firms with more than 250 employees "
+        "used at least one AI technology.") == []
+
+
+def test_share_of_people_is_not_a_firm_share():
+    # Only FIRM populations have the size-band ambiguity. A share of Danes
+    # needs no employee count, and flagging it would train the repair pass to
+    # bolt nonsense onto perfectly good sentences.
+    from app.summarize import unqualified_firm_shares
+
+    assert unqualified_firm_shares(
+        "Around forty percent of Danes have listened to a podcast in the past "
+        "three months, up from six percent in 2008.") == []
+
+
+def test_firm_share_missing_only_the_year_is_flagged():
+    # ep. 726 stated a real large-firm figure with no year: 63% is 2024, while
+    # other episodes said 75% for 2025. Both correct, read as contradicting.
+    from app.summarize import unqualified_firm_shares
+
+    assert len(unqualified_firm_shares(
+        "Sixty-three percent of the largest firms use it.")) == 1
+
+
+def test_danish_perspective_repairs_and_records_unqualified_shares():
+    import asyncio
+
+    from app import summarize
+
+    bad = ("And now, the view from Denmark. According to Danmarks Statistik, the "
+           "share of Danish companies using AI jumped from twelve percent in 2023 "
+           "to forty-two percent in 2025. " + "Filler sentence here. " * 18)
+    good = bad.replace(
+        "the share of Danish companies using AI",
+        "the share of Danish firms with ten or more employees using AI")
+    seen = {}
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        if "sentences are the problem" in prompt:   # the repair pass
+            seen["repair"] = prompt
+            return good
+        if "final editor" in prompt:            # scrub pass: echo back
+            return prompt.split("Script:\n", 1)[1]
+        return bad
+
+    with _stub_llm(summarize, fake_llm):
+        segment, prov = asyncio.new_event_loop().run_until_complete(
+            summarize.danish_perspective("T", "body", "en"))
+
+    assert "twelve percent" in seen["repair"]   # offender quoted at the model
+    assert "ten or more employees" in segment   # repaired text is what ships
+    assert prov["dk_unqualified"] == 0          # nothing left offending
+
+
+def test_danish_definite_firm_forms_are_flagged():
+    # Danish states shares with the definite plural, and the inbox source is
+    # language=auto — a Danish article gets a Danish segment, where an
+    # indefinite-only pattern is a silent no-op reading as "clean".
+    from app.summarize import unqualified_firm_shares
+
+    assert len(unqualified_firm_shares(
+        "42 procent af virksomhederne brugte kunstig intelligens.")) == 1
+    assert len(unqualified_firm_shares(
+        "Femoghalvtreds procent af de danske selskaber bruger AI.")) == 1
+
+
+def test_share_without_a_figure_is_not_flagged():
+    # "A growing share of American companies" states no figure, so there is no
+    # size band to add. The repair pass would have to either bolt a Danish band
+    # onto it or delete a legitimate sentence.
+    from app.summarize import unqualified_firm_shares
+
+    assert unqualified_firm_shares(
+        "A growing share of American companies now ban ChatGPT.") == []
+    assert unqualified_firm_shares(
+        "The proportion of firms reporting shortages is rising.") == []
+
+
+def test_incidental_employee_mention_does_not_qualify_the_share():
+    # "a 2025 survey of employees" mentions both a year and employees, but
+    # neither attaches to the 42% — the band has to qualify the population.
+    from app.summarize import unqualified_firm_shares
+
+    assert len(unqualified_firm_shares(
+        "Forty-two percent of Danish companies use AI, according to a 2025 "
+        "survey of employees.")) == 1
+
+
+def test_year_in_the_preceding_sentence_still_qualifies():
+    from app.summarize import unqualified_firm_shares
+
+    assert unqualified_firm_shares(
+        "In 2025, Danmarks Statistik counted them. Forty-two percent of firms "
+        "with ten or more employees use AI.") == []
+
+
+def test_repair_that_guts_the_segment_falls_back_to_the_original():
+    # The repair is told to DELETE figures it cannot place, and its own guard
+    # only rejects results under 50% of the input — but the caller raises below
+    # 400 chars. A 620-char segment repaired down to 360 clears one gate and
+    # fails the other, dropping the whole Danish segment. Airing an unqualified
+    # figure beats airing nothing.
+    import asyncio
+
+    from app import summarize
+
+    bad = ("And now, the view from Denmark. Forty-two percent of Danish companies "
+           "use AI. " + "Filler sentence here. " * 25)
+    gutted = "And now, the view from Denmark. " + "Filler sentence here. " * 15
+    assert len(bad) > 600 and 300 < len(gutted) < 400
+    assert len(gutted) > len(bad) * 0.5  # clears the repair's own shrink guard
+
+    async def fake_llm(prompt, model="", tools=None, thinking=False):
+        if "sentences are the problem" in prompt:
+            return gutted
+        if "final editor" in prompt:
+            return prompt.split("Script:\n", 1)[1]
+        return bad
+
+    with _stub_llm(summarize, fake_llm):
+        segment, prov = asyncio.new_event_loop().run_until_complete(
+            summarize.danish_perspective("T", "body", "en"))
+
+    assert "Forty-two percent" in segment   # the original survived
+    assert prov["dk_unqualified"] == 1      # honestly recorded as still unfixed
