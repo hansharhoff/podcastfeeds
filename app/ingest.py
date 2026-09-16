@@ -520,40 +520,53 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
     """Full article as HTML with text, quotes and images in reading order, so
     the listener can scroll along. Image descriptions become captions."""
     parts = [_shownotes_header(label, link)]
-    used = 0
+    used = len(parts[0])
     for seg in segments:
-        if used >= max_chars:
-            parts.append("<p>…</p>")
-            break
         if seg["type"] in ("text", "dialogue") and is_cruft_line(seg["text"]):
             continue
         if seg["type"] == "text":
-            parts.append(f"<p>{_html_escape(seg['text'])}</p>")
-            used += len(seg["text"])
+            part = f"<p>{_html_escape(seg['text'])}</p>"
         elif seg["type"] == "question":
-            parts.append(f"<p><strong>Q: {_html_escape(seg['text'])}</strong></p>")
-            used += len(seg["text"])
+            part = f"<p><strong>Q: {_html_escape(seg['text'])}</strong></p>"
         elif seg["type"] == "dialogue":
-            parts.append(
-                f"<p><strong>{_html_escape(seg['speaker'])}:</strong> "
-                f"{_html_escape(seg['text'])}</p>"
-            )
-            used += len(seg["text"])
+            part = (f"<p><strong>{_html_escape(seg['speaker'])}:</strong> "
+                    f"{_html_escape(seg['text'])}</p>")
         elif seg["type"] == "heading":
-            parts.append(f"<h3>{_html_escape(seg['text'])}</h3>")
-            used += len(seg["text"])
+            part = f"<h3>{_html_escape(seg['text'])}</h3>"
         elif seg["type"] == "quote":
-            parts.append(f"<blockquote>{_html_escape(seg['text'])}</blockquote>")
-            used += len(seg["text"])
+            part = f"<blockquote>{_html_escape(seg['text'])}</blockquote>"
         elif seg["type"] == "footnote":
-            parts.append(
-                f"<p><small><em>Footnote: {_html_escape(seg['text'])}</em></small></p>")
-            used += len(seg["text"])
+            part = f"<p><small><em>Footnote: {_html_escape(seg['text'])}</em></small></p>"
         elif seg["type"] == "image":
             cap = seg.get("caption") or seg.get("description") or ""
             figcap = f"<figcaption>{_html_escape(cap)}</figcaption>" if cap else ""
-            parts.append(f'<figure><img src="{_attr(seg["src"])}" loading="lazy"/>{figcap}</figure>')
+            part = (f'<figure><img src="{_attr(seg["src"])}" '
+                    f'loading="lazy"/>{figcap}</figure>')
+        else:
+            continue
+        # Budget the RENDERED part, not the raw text: images were previously
+        # free (a <figure> with a long CDN URL cost nothing), and escaping
+        # turns one "&" into five characters. 92 of 711 episodes hit the
+        # downstream 25000-char slice; two of them were cut mid-tag.
+        if used + len(part) + 1 > max_chars:
+            parts.append("<p>…</p>")
+            break
+        parts.append(part)
+        used += len(part) + 1  # +1 for the newline "\n".join adds
     return "\n".join(parts)
+
+
+def _safe_truncate_html(html_: str, limit: int) -> str:
+    """Cut assembled show-note HTML without splitting a tag.
+
+    A blind slice landed inside "</figcaption>" (ep. 573) and "</strong>"
+    (ep. 605), and feedgen wraps the result in CDATA verbatim."""
+    if len(html_) <= limit:
+        return html_
+    cut = html_[:limit]
+    if cut.rfind("<") > cut.rfind(">"):   # a tag was left half-written
+        cut = cut[:cut.rfind("<")]
+    return cut.rstrip() + "\n<p>…</p>"
 
 
 def _episode_intro(title: str, source_name: str, language: str,
@@ -1294,7 +1307,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             ep.voice = voice
             ep.status = "ready"
             ep.published_at = utcnow()
-            ep.description = show_notes[:25000]  # full scroll-along notes incl. images
+            # Belt and braces: _interleaved_shownotes already budgets on the
+            # rendered length, so this only ever fires on an unforeseen shape.
+            ep.description = _safe_truncate_html(show_notes, 25000)
             ep.image_url = episode_image
             ep.script = json.dumps({"blocks": spoken_blocks}, ensure_ascii=False)
             ep.provenance = json.dumps(prov, ensure_ascii=False)

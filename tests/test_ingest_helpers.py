@@ -971,3 +971,44 @@ def test_recent_dk_claims_cap_drops_the_oldest_first(dk_ledger):
     dk_ledger.commit()
 
     assert recent_dk_claims(dk_ledger, days=7, limit=1) == ["NEW | y | 2"]
+
+
+# ── Show notes: the budget must count what it actually emits ─────────────
+# `used` counted seg["text"] only, so <figure><img src="…long CDN URL…"> was
+# free and an image-heavy article sailed past the budget. ep. 573 and ep. 605
+# ended at exactly 25000 chars, mid-tag ("</figcapt", "</st"), which feedgen
+# wraps in CDATA verbatim.
+
+def test_shownotes_budget_counts_image_markup():
+    from app.ingest import _interleaved_shownotes
+
+    images = [{"type": "image", "src": "https://cdn.example.com/" + "x" * 180,
+               "caption": ""} for _ in range(50)]
+    notes = _interleaved_shownotes("Src", images, "https://example.com", max_chars=2000)
+    assert len(notes) < 4000, "image markup must count toward the budget"
+    assert notes.endswith("<p>…</p>")
+
+
+def test_shownotes_budget_counts_escaping_expansion():
+    # "&" becomes "&amp;" — five emitted chars for one counted one.
+    from app.ingest import _interleaved_shownotes
+
+    segs = [{"type": "text", "text": "&" * 400} for _ in range(20)]
+    notes = _interleaved_shownotes("Src", segs, "https://example.com", max_chars=2000)
+    assert len(notes) < 6000
+
+
+def test_shownotes_never_end_inside_a_tag():
+    from app.ingest import _safe_truncate_html
+
+    # The real ep. 573 shape: the cut lands inside a closing tag.
+    html_ = "<figure><img src='x'/><figcaption>" + "word " * 200 + "</figcaption></figure>"
+    for limit in range(40, len(html_), 37):
+        out = _safe_truncate_html(html_, limit)
+        assert out.rfind("<") <= out.rfind(">"), f"cut inside a tag at limit={limit}"
+
+
+def test_safe_truncate_leaves_short_html_alone():
+    from app.ingest import _safe_truncate_html
+
+    assert _safe_truncate_html("<p>short</p>", 25000) == "<p>short</p>"
