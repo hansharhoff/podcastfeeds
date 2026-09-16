@@ -440,6 +440,14 @@ DANISH_PERSPECTIVE_MODEL = os.environ.get("DK_MODEL", "claude-opus-4-8")
 # has already been said.
 CLAIMS_DELIM = "---CLAIMS---"
 
+# Shorter than this is a failed generation, not a terse one; longer overruns
+# the 1-2 minute slot the segment is written for.
+DK_MIN_CHARS, DK_MAX_CHARS = 400, 2600
+
+
+def _dk_segment_ok(segment: str) -> bool:
+    return not looks_meta(segment) and DK_MIN_CHARS <= len(segment) <= DK_MAX_CHARS
+
 
 def split_claims(raw: str) -> tuple[str, list[str]]:
     """Split a segment from its machine-readable claims trailer.
@@ -490,7 +498,16 @@ async def danish_perspective(title: str, body: str, language: str,
         "or fetch current Danish figures where they strengthen the segment (Danmarks "
         "Statistik, ministry data, recent coverage); prefer a verified number over a "
         "remembered one, and where you can't verify, say so plainly rather than "
-        "inventing numbers. Plain text read aloud verbatim by TTS: no markdown, no "
+        "inventing numbers. "
+        # The figures were never invented — they were real cells of a table read
+        # out without their row label, so 15% (all firms 10+) and 12% (the 10-49
+        # band) both arrived as "the share of Danish companies".
+        "Danish business statistics are published per employee-size band and the "
+        "bands disagree, so any share of companies must say which companies and "
+        "which year in the same sentence — 'forty-two percent of Danish firms with "
+        "ten or more employees, in 2025', never 'forty-two percent of Danish "
+        "companies'. If you cannot tell which band a figure refers to, leave it out. "
+        "Plain text read aloud verbatim by TTS: no markdown, no "
         "headings, no URLs, no citation brackets, and no framing around the segment "
         f"beyond the trailer described below. Begin with exactly: '{opening}'\n\n"
         f"{cooldown}"
@@ -503,17 +520,35 @@ async def danish_perspective(title: str, body: str, language: str,
     raw, meta = await llm_with_meta(prompt, model=DANISH_PERSPECTIVE_MODEL,
                                     tools=["WebSearch"], thinking=True)
     raw, claims = split_claims(raw)
-    segment, scrub = await scrub_script(raw, language)
+    repaired = await _repair_unqualified_shares(raw, language)
+    segment, scrub = await scrub_script(repaired, language)
     # Belt and braces: the scrub pass is an LLM too, and a delimiter that
     # survives into the audio is the one failure the listener would hear.
     segment, leaked = split_claims(segment)
-    if looks_meta(segment) or not (400 <= len(segment) <= 2600):
+    if not _dk_segment_ok(segment) and repaired != raw:
+        # The repair may delete figures it cannot place, and its own shrink
+        # guard (50%) is looser than this floor — so an obedient repair can
+        # leave too little to air. An unqualified figure beats no segment.
+        log.warning("share-qualifier repair left %d chars; airing the original",
+                    len(segment))
+        segment, scrub = await scrub_script(raw, language)
+        segment, leaked = split_claims(segment)
+    if not _dk_segment_ok(segment):
         raise RuntimeError(f"danish perspective invalid ({len(segment)} chars)")
     searches = meta.get("searches")
     return segment, {
         "dk_model": DANISH_PERSPECTIVE_MODEL, "dk_scrub": scrub,
+        # Known limitation: the trailer describes what the FIRST draft claimed.
+        # When the repair deletes a figure it could not place, the ledger still
+        # bars the next week from stating it — conservative, but it can also bar
+        # the correctly-qualified version. Regenerating the trailer would cost a
+        # third LLM call, and the claims use digits while the script spells
+        # numbers out, so they cannot be reconciled by matching text.
         "dk_claims": claims or leaked,
         "dk_searches": None if searches is None else len(searches),
+        # Measured on the text that actually ships, so it counts what a listener
+        # would hear rather than what the repair pass thought it fixed.
+        "dk_unqualified": len(unqualified_firm_shares(segment)),
     }
 
 
@@ -581,6 +616,78 @@ _FIGURE_RE = re.compile(
     r"(?:percent|procent|million|billion)\b",
     re.I,
 )
+
+
+# ── Population guard for firm-share figures ──────────────────────────────
+# Danmarks Statistik publishes AI adoption per employee-size band, and the
+# bands disagree: for 2023 it is 15% of all firms with 10+ employees but 12%
+# of the 10-49 band. Both are correct; both got narrated as "the share of
+# Danish companies", so 31 episodes over 60 days quoted the same source at
+# two different numbers. Same defect for the large-firm figure (63% is 2024,
+# 75% is 2025, neither said which).
+#
+# Scoped to FIRM populations on purpose: a share of Danes carries no size
+# band, and flagging it would teach the repair pass to bolt an employee count
+# onto a sentence about podcast listeners — see the negative tests.
+# Danish states these with the definite plural ("virksomhederne"), and the
+# inbox source is language=auto — an indefinite-only pattern is a silent
+# no-op on Danish segments that reads as "clean" in provenance.
+_FIRM_POPULATION = (
+    r"(?:companies|firms|enterprises|businesses|corporations"
+    r"|virksomheder(?:ne|nes)?|selskaber(?:ne)?|firmaer(?:ne)?)"
+)
+_PCT_RE = re.compile(
+    r"\b(?:\d+(?:[.,]\d+)?|[a-zæøå][a-zæøå-]*)\s*(?:percent|procent)\b", re.I)
+# "N percent of X companies" carries its own figure; "the share of X companies"
+# does not, and a share with no figure has no band to add — the repair pass
+# would have to bolt a Danish size band onto "a growing share of American
+# companies" or delete a legitimate sentence.
+_FIRM_SHARE_FIG_RE = re.compile(
+    rf"\b(?:\d+(?:[.,]\d+)?|[a-zæøå-]+)\s*(?:percent|procent)\s+(?:of|af)\s+"
+    rf"(?:[\w-]+\s+){{0,3}}{_FIRM_POPULATION}\b", re.I)
+_FIRM_SHARE_WORD_RE = re.compile(
+    rf"\b(?:share|proportion|andel)\s+(?:of|af)\s+(?:[\w-]+\s+){{0,3}}"
+    rf"{_FIRM_POPULATION}\b", re.I)
+
+# The band has to qualify THIS population, not merely appear in the sentence:
+# "42 percent of Danish companies, per a 2025 survey of employees" mentions
+# both a year and employees while qualifying nothing.
+_BAND_AFTER_RE = re.compile(
+    r"\A(?P<gap>[^.]{0,55}?)\b(?:employees|ansatte|medarbejdere)\b", re.I)
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_HEADCOUNT_RE = re.compile(
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+    r"few|fewer|ti|tyve|halvtreds|hundrede)\b", re.I)
+
+
+def _band_attaches(tail: str) -> bool:
+    """True when an employee-size band qualifies the population just named."""
+    m = _BAND_AFTER_RE.match(tail)
+    if not m:
+        return False
+    # A year is not a headcount: "a 2025 survey of employees" qualifies nothing.
+    return bool(_HEADCOUNT_RE.search(_YEAR_RE.sub(" ", m.group("gap"))))
+
+
+def unqualified_firm_shares(script: str) -> list[str]:
+    """Sentences stating a share of firms without the employee-size band and
+    the year that say WHICH figure it is. Empty list is the pass."""
+    offenders = []
+    sentences = re.split(r"(?<=[.!?])\s+", script)
+    for i, sentence in enumerate(sentences):
+        matches = list(_FIRM_SHARE_FIG_RE.finditer(sentence))
+        if _PCT_RE.search(sentence):
+            matches += _FIRM_SHARE_WORD_RE.finditer(sentence)
+        if not matches:
+            continue
+        has_band = any(_band_attaches(sentence[m.end():]) for m in matches)
+        # A year opening the previous sentence still governs this one.
+        window = sentence if i == 0 else sentences[i - 1] + " " + sentence
+        if has_band and _YEAR_RE.search(window):
+            continue
+        offenders.append(sentence.strip())
+    return offenders
 
 
 def vague_attributions(script: str) -> list[str]:
@@ -663,6 +770,45 @@ def _research_provenance(script: str, searches: list[dict] | None,
                     prov["input_chars"], len(script))
         prov["unsourced_figures"] = True
     return prov
+
+
+async def _repair_unqualified_shares(script: str, language: str) -> str:
+    """One corrective pass over firm shares missing their size band or year.
+
+    Mirrors _repair_vague_attribution deliberately, including its failure
+    handling: a repair that eats half the segment is a failed repair. Deleting
+    the figure is an acceptable outcome — an unattributable cell of the table
+    is worth less than the sentence it sits in."""
+    offenders = unqualified_firm_shares(script)
+    if not offenders:
+        return script
+    lang_name = "Danish" if language == "da" else "English"
+    quoted = ", ".join(f'"{o}"' for o in dict.fromkeys(offenders))
+    prompt = (
+        "The podcast script below states a share of Danish companies without saying "
+        "WHICH companies or WHEN, and the underlying statistics differ by "
+        "employee-size band: Danmarks Statistik reports 15% of firms with 10 or more "
+        "employees using AI in 2023, but 12% of the 10-49 band. These sentences are "
+        f"the problem: {quoted}. For each one, add the employee-size band and the "
+        "year the figure refers to — but only if you can tell from the figure itself "
+        "which row it came from. If you cannot, delete the figure instead; never "
+        "guess a band. Change nothing else: keep every other sentence exactly as "
+        "written. Never comment on what you changed. "
+        f"The script is in {lang_name}; reply in {lang_name} with ONLY the script.\n\n"
+        f"Script:\n{script}"
+    )
+    try:
+        fixed = (await llm(prompt)).strip()
+    except Exception as exc:
+        log.warning("share-qualifier repair unavailable (%s); keeping original", exc)
+        return script
+    if looks_meta(fixed) or len(fixed) < len(script) * 0.5:
+        log.warning("share-qualifier repair returned %d chars for a %d-char script; "
+                    "keeping original", len(fixed), len(script))
+        return script
+    log.info("share-qualifier repair: %d unqualified -> %d",
+             len(offenders), len(unqualified_firm_shares(fixed)))
+    return fixed
 
 
 async def digest_script(source_name: str, date_str: str, items: list[dict],
