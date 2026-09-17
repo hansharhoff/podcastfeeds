@@ -507,18 +507,87 @@ def _collect_footnotes(root) -> dict[str, str]:
     return notes
 
 
-def _take_footnote_refs(el, notes: dict[str, str]) -> list[str]:
-    """Strip inline footnote anchors from `el`, returning the notes they point at.
+def _text_before(root, target) -> str:
+    """Text preceding `target` inside `root`, in document order.
 
-    The anchor's text is just the marker digit, so leaving it in place makes the
-    voice read "…at an astonishing rate. One." mid-paragraph (ep 310)."""
-    refs: list[str] = []
+    The target's own text is excluded — it is the marker digit, which is about
+    to be removed and must not count toward the offset."""
+    parts: list[str] = []
+    found = False
+
+    def walk(node):
+        nonlocal found
+        if node is target:
+            found = True
+            return
+        if node.text:
+            parts.append(node.text)
+        for child in node:
+            walk(child)
+            if found:
+                return
+            if child.tail:
+                parts.append(child.tail)
+
+    walk(root)
+    return "".join(parts)
+
+
+# End of a sentence: terminal punctuation plus any closing quote or bracket.
+_SENTENCE_END_RE = re.compile(r"[.!?][\"'”’)\]]*(?:\s+|$)")
+_ENDS_SENTENCE_RE = re.compile(r"[.!?][\"'”’)\]]*\s*$")
+
+
+def _sentence_cut(text: str, pos: int) -> int:
+    """Index just past the end of the sentence containing `pos`."""
+    # Substack usually puts the marker AFTER the full stop ("…at that rate.1"),
+    # so the sentence is already over and searching onward would carry the note
+    # a whole sentence too far.
+    if _ENDS_SENTENCE_RE.search(text[:pos]):
+        return pos
+    m = _SENTENCE_END_RE.search(text, pos)
+    return m.end() if m else len(text)
+
+
+def _paragraph_segments(text: str, refs: list[tuple[int, str]]) -> list[dict]:
+    """Paragraph text split so each footnote follows the sentence that cited it.
+
+    Waiting for the end of the paragraph stranded a note several sentences from
+    its referent on Zvi-length paragraphs; interrupting at the marker itself
+    would break a sentence the listener is mid-way through (Hans, 2026-09-17)."""
+    segments: list[dict] = []
+    cursor = 0
+    for pos, note in sorted(refs):
+        cut = _sentence_cut(text, max(pos, cursor))
+        chunk = text[cursor:cut].strip()
+        if chunk:
+            segments.append({"type": "text", "text": chunk})
+        segments.append({"type": "footnote", "text": note})
+        cursor = cut
+    rest = text[cursor:].strip()
+    if rest:
+        segments.append({"type": "text", "text": rest})
+    return segments
+
+
+def _take_footnote_refs(el, notes: dict[str, str]) -> list[tuple[int, str]]:
+    """Strip inline footnote anchors from `el`, returning (offset, note) pairs.
+
+    The offset is where the marker sat in `el`'s cleaned text, so the caller can
+    place the note after that sentence. The anchor's text is just the marker
+    digit, so leaving it in place makes the voice read "…at an astonishing
+    rate. One." mid-paragraph (ep 310)."""
+    refs: list[tuple[int, str]] = []
+    # Offsets are measured against the text as it will read AFTER every marker
+    # is removed, so each one shifts left past the markers before it.
+    shift = 0
     for a in list(el.iter("a")):
         if "footnote-anchor" not in (a.get("class", "") or ""):
             continue
         marker = (a.text_content() or "").strip()
         if marker in notes:
-            refs.append(notes[marker])
+            refs.append((len(_text_before(el, a)) - shift, notes[marker]))
+        shift += len(a.text_content() or "")
         parent = a.getparent()
         if parent is not None:
             tail = a.tail or ""
@@ -697,7 +766,10 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             t = " ".join(p.strip() for p in parts if p and p.strip())
             if t:
                 segments.append({"type": "text", "text": t})
-            for note in refs:
+            # A list item is one short unit and its text is rebuilt by joining
+            # parts, so the offsets don't map onto it — the note follows the
+            # whole item, which here already means "after the sentence".
+            for _pos, note in refs:
                 segments.append({"type": "footnote", "text": note})
             for sub in blocks:
                 handle_child(sub)
@@ -722,15 +794,11 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
         elif tag == "p":
             # A paragraph may embed an inline image (rare) — capture text then it.
             # Footnote anchors come out first so their marker digit never ends
-            # up spoken inside the sentence; the note itself follows the
-            # paragraph, which is as close to "inline" as audio allows without
-            # interrupting a sentence mid-flow (ep 310).
+            # up spoken inside the sentence (ep 310); the note then follows the
+            # sentence that cited it, which keeps it next to its referent
+            # without breaking a sentence mid-flow.
             refs = _take_footnote_refs(child, footnotes)
-            t = child.text_content().strip()
-            if t:
-                segments.append({"type": "text", "text": t})
-            for note in refs:
-                segments.append({"type": "footnote", "text": note})
+            segments.extend(_paragraph_segments(child.text_content(), refs))
             for img in child.iter("img"):
                 if img.get("src", "").startswith("http"):
                     segments.append({"type": "image", "src": img.get("src"), "caption": ""})

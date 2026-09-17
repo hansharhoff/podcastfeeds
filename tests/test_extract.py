@@ -807,3 +807,64 @@ def test_pdf_title_ignores_placeholder_metadata_titles():
 def test_pdf_title_without_metadata_or_url_is_empty():
     from app.extract import pdf_title
     assert pdf_title(_mini_pdf("Body."), "") == ""
+
+
+# ── Footnote placement: after the SENTENCE that referenced it ────────────
+# Previously the note waited until the whole paragraph finished, which on a
+# long paragraph stranded it several sentences from its referent. The marker
+# digit itself is still stripped (ep. 310: "…at an astonishing rate. One.").
+
+_FN_DEFS = (
+    '<div class="footnote"><a class="footnote-number" href="#footnote-anchor-1">1</a>'
+    '<div class="footnote-content"><p>First note.</p></div></div>'
+    '<div class="footnote"><a class="footnote-number" href="#footnote-anchor-2">2</a>'
+    '<div class="footnote-content"><p>Second note.</p></div></div>'
+)
+
+
+def _anchor(n):
+    return f'<a class="footnote-anchor" href="#footnote-{n}">{n}</a>'
+
+
+def test_footnote_lands_after_its_own_sentence_not_the_paragraph():
+    from app.extract import segments_from_clean_html
+    html_ = (f"<p>Alpha grew fast{_anchor(1)} last year. Beta stayed flat. "
+             f"Gamma fell.</p>{_FN_DEFS}")
+    _, segments = segments_from_clean_html(html_)
+    kinds = [(s["type"], s["text"]) for s in segments]
+    assert kinds[0] == ("text", "Alpha grew fast last year.")
+    assert kinds[1] == ("footnote", "First note.")
+    assert kinds[2][0] == "text" and kinds[2][1].startswith("Beta stayed flat.")
+
+
+def test_marker_after_the_full_stop_does_not_slip_a_sentence():
+    # Substack usually puts the marker AFTER the period ("…rate.1"), so a naive
+    # "next sentence end" search would place the note one sentence too late.
+    from app.extract import segments_from_clean_html
+    html_ = (f"<p>Alpha grew fast last year.{_anchor(1)} Beta stayed flat.</p>"
+             f"{_FN_DEFS}")
+    _, segments = segments_from_clean_html(html_)
+    assert [(s["type"], s["text"]) for s in segments] == [
+        ("text", "Alpha grew fast last year."),
+        ("footnote", "First note."),
+        ("text", "Beta stayed flat."),
+    ]
+
+
+def test_two_footnotes_each_follow_their_own_sentence():
+    from app.extract import segments_from_clean_html
+    html_ = (f"<p>Alpha grew{_anchor(1)} fast. Beta stayed flat{_anchor(2)} "
+             f"overall. Gamma fell.</p>{_FN_DEFS}")
+    _, segments = segments_from_clean_html(html_)
+    assert [s["type"] for s in segments] == [
+        "text", "footnote", "text", "footnote", "text"]
+    assert segments[1]["text"] == "First note."
+    assert segments[3]["text"] == "Second note."
+
+
+def test_paragraph_without_footnotes_is_still_one_segment():
+    from app.extract import segments_from_clean_html
+    _, segments = segments_from_clean_html(
+        "<p>One sentence. And a second one here.</p>")
+    assert [(s["type"], s["text"]) for s in segments] == [
+        ("text", "One sentence. And a second one here.")]
