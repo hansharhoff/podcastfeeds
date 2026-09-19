@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import feedparser
+import httpx
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
@@ -115,16 +116,39 @@ def _entry_text(entry) -> str:
     return strip_html(entry.get("summary", ""))
 
 
-def _parse_feed_sync(url: str):
-    # feedparser uses urllib with no timeout; guard so a hung feed host can't
-    # tie up the worker thread (and stall that source's polling) indefinitely.
-    import socket
-    old = socket.getdefaulttimeout()
-    socket.setdefaulttimeout(30)
-    try:
-        return feedparser.parse(url)
-    finally:
-        socket.setdefaulttimeout(old)
+FEED_TIMEOUT = 30
+FEED_RETRY_SECONDS = 10
+# feedparser's own fetcher sends a Python-urllib UA; say who we are instead.
+FEED_UA = "podcastfeeds/1.0 (+https://github.com/hansharhoff/podcastfeeds)"
+
+
+async def _fetch_feed_bytes(url: str) -> tuple[bytes, int, str]:
+    """(body, status, content-type) for a feed URL.
+
+    feedparser.parse(url) would fetch this itself, but it does so through
+    urllib with no timeout, and the previous guard set the PROCESS-GLOBAL
+    socket.setdefaulttimeout under asyncio.to_thread inside asyncio.gather —
+    overlapping feeds could interleave save/restore and leave it clobbered.
+    Fetching here also means a failed parse can report what actually arrived.
+    """
+    async with httpx.AsyncClient(timeout=FEED_TIMEOUT, follow_redirects=True,
+                                 headers={"User-Agent": FEED_UA}) as client:
+        resp = await client.get(url)
+        return resp.content, resp.status_code, resp.headers.get("content-type", "")
+
+
+def _feed_diagnostics(body: bytes, status: int, ctype: str, parsed) -> str:
+    """What came back, for a feed that would not parse.
+
+    hnrss fails ~2 scheduled polls in 3 with a constant "7:2 mismatched tag"
+    that no manual fetch reproduces, and parse(url) hid the response entirely.
+    """
+    head = body[:300].decode("utf-8", "replace").replace("\n", " ")
+    parts = [f"status={status}", f"bytes={len(body)}", f"ctype={ctype!r}"]
+    if parsed is not None:
+        parts.append(f"err={_feed_error(parsed)}")
+    parts.append(f"head={head!r}")
+    return " ".join(parts)
 
 
 def _feed_error(parsed) -> str:
@@ -143,11 +167,20 @@ def _feed_error(parsed) -> str:
 
 
 async def _parse_feed(url: str):
-    parsed = await asyncio.to_thread(_parse_feed_sync, url)
+    body, status, ctype = await _fetch_feed_bytes(url)
+    parsed = feedparser.parse(body)
+    parsed.status = status
     # Transient upstream failures (hnrss 502s): one retry before giving up.
-    if not parsed.entries and (parsed.bozo or getattr(parsed, "status", 200) >= 500):
-        await asyncio.sleep(10)
-        parsed = await asyncio.to_thread(_parse_feed_sync, url)
+    if not parsed.entries and (parsed.bozo or status >= 500):
+        log.warning("feed unparseable [%s]: %s — retrying",
+                    url, _feed_diagnostics(body, status, ctype, parsed))
+        await asyncio.sleep(FEED_RETRY_SECONDS)
+        body, status, ctype = await _fetch_feed_bytes(url)
+        parsed = feedparser.parse(body)
+        parsed.status = status
+        if not parsed.entries and (parsed.bozo or status >= 500):
+            log.warning("feed unparseable on retry [%s]: %s",
+                        url, _feed_diagnostics(body, status, ctype, parsed))
     return parsed
 
 

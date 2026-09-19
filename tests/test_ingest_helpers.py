@@ -1012,3 +1012,67 @@ def test_safe_truncate_leaves_short_html_alone():
     from app.ingest import _safe_truncate_html
 
     assert _safe_truncate_html("<p>short</p>", 25000) == "<p>short</p>"
+
+
+# ── Feed fetching: httpx bytes instead of feedparser's own urllib ────────
+# _parse_feed_sync mutated the process-global socket.setdefaulttimeout while
+# running under asyncio.to_thread inside asyncio.gather across every feed, so
+# overlapping calls could interleave save/restore. Separately, parse(url) hides
+# the network layer: when hnrss fails ~2 polls in 3 with a constant
+# "7:2 mismatched tag", there is no way to see what actually arrived.
+
+_RSS = (b'<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+        b"<item><title>One</title><link>http://x/1</link></item>"
+        b"<item><title>Two</title><link>http://x/2</link></item></channel></rss>")
+
+
+def _stub_fetch(monkeypatch, body, status=200, ctype="application/rss+xml"):
+    from app import ingest
+
+    async def fake(url):
+        return body, status, ctype
+    monkeypatch.setattr(ingest, "_fetch_feed_bytes", fake)
+
+
+def test_parse_feed_reads_entries_from_fetched_bytes(monkeypatch):
+    from app import ingest
+
+    _stub_fetch(monkeypatch, _RSS)
+    parsed = _run(ingest._parse_feed("http://example.com/feed"))
+    assert [e.title for e in parsed.entries] == ["One", "Two"]
+    assert parsed.bozo is False
+
+
+def test_parse_feed_leaves_the_global_socket_timeout_alone(monkeypatch):
+    import socket
+
+    from app import ingest
+
+    _stub_fetch(monkeypatch, _RSS)
+    socket.setdefaulttimeout(7.5)
+    try:
+        _run(ingest._parse_feed("http://example.com/feed"))
+        assert socket.getdefaulttimeout() == 7.5
+    finally:
+        socket.setdefaulttimeout(None)
+
+
+def test_broken_feed_diagnostics_name_status_size_and_first_bytes(monkeypatch):
+    from app import ingest
+
+    broken = b"<rss><channel><item><title>x</title></channel></rss>"
+    _stub_fetch(monkeypatch, broken, status=200, ctype="text/html")
+    monkeypatch.setattr(ingest, "FEED_RETRY_SECONDS", 0)
+    parsed = _run(ingest._parse_feed("http://example.com/feed"))
+    diag = ingest._feed_diagnostics(broken, 200, "text/html", parsed)
+    assert "status=200" in diag
+    assert f"bytes={len(broken)}" in diag
+    assert "text/html" in diag
+    assert "<rss><channel>" in diag          # the head snippet, for eyeballing
+
+
+def test_feed_diagnostics_snippet_is_bounded(monkeypatch):
+    from app import ingest
+
+    huge = b"<rss>" + b"x" * 5000
+    assert len(ingest._feed_diagnostics(huge, 200, "application/xml", None)) < 600
