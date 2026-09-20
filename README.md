@@ -82,6 +82,10 @@ appear nowhere in tracked code. Enable it once per clone:
 git config core.hooksPath scripts/hooks
 ```
 
+Two hooks: `pre-commit` checks staged file content, `commit-msg` checks the
+message itself — a private phrase quoted in a commit message is the same leak
+and pre-commit never sees it.
+
 ```bash
 scripts/check_private_leaks.py --tracked   # audit the working tree
 scripts/check_private_leaks.py --history   # audit every commit message

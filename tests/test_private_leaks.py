@@ -62,3 +62,29 @@ def test_domains_and_identifiers_still_count_as_private():
 def test_single_common_word_title_is_dropped_but_a_phrase_is_kept():
     assert private_phrases(["conversations"]) == []
     assert private_phrases(["conversations with a friend"])
+
+
+def test_commit_message_scanning_ignores_gits_comment_lines(tmp_path):
+    # git hands commit-msg a file that also holds the commented template (and,
+    # with --verbose, the whole staged diff). Scanning those would block on
+    # code the author is legitimately removing.
+    from app.privacy import scan_message_file
+
+    phrases = private_phrases(["some obscure reading item"])
+    msg = tmp_path / "COMMIT_EDITMSG"
+    msg.write_text("Fix the thing\n\n# On branch main\n"
+                   "# some obscure reading item was here\n")
+    assert scan_message_file(str(msg), phrases) == []
+
+
+def test_commit_message_scanning_catches_a_private_phrase(tmp_path):
+    # The hole this closes: 4ab022a quoted a real queue phrase in its own
+    # message while describing the guard, and pre-commit waved it through
+    # because it only scans staged file content.
+    from app.privacy import scan_message_file
+
+    phrases = private_phrases(["some obscure reading item"])
+    msg = tmp_path / "COMMIT_EDITMSG"
+    msg.write_text("Explain the guard\n\nverified against some obscure reading item\n")
+    hits = scan_message_file(str(msg), phrases)
+    assert len(hits) == 1 and "some obscure reading item" in hits[0]

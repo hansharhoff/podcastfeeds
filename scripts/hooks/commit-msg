@@ -1,0 +1,5 @@
+#!/usr/bin/env sh
+# Pre-commit only sees staged FILE content; a private phrase quoted in the
+# commit message slipped through (4ab022a). This closes that.
+exec "$(dirname "$0")/../../.venv/bin/python" \
+     "$(dirname "$0")/../check_private_leaks.py" --message "$1"

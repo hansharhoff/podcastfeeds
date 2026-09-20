@@ -110,6 +110,25 @@ def scan_staged(phrases) -> list[str]:
     return findings
 
 
+def scan_message_file(path: str, phrases) -> list[str]:
+    """Scan a commit message about to be written (the commit-msg hook's arg).
+
+    Pre-commit only sees staged file content, so a private phrase quoted in the
+    MESSAGE went straight through — commit 4ab022a did exactly that while
+    describing this guard.
+
+    git's own comment lines are skipped: the template, and with --verbose the
+    entire staged diff, arrive in this same file.
+    """
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            body = "\n".join(ln for ln in fh.read().splitlines()
+                              if not ln.lstrip().startswith("#"))
+    except OSError:
+        return []
+    return [f"commit message:{n}: {phrase}" for n, phrase in scan_text(body, phrases)]
+
+
 def scan_commit_messages(phrases, rev_range: str = "HEAD") -> list[str]:
     if not phrases:
         return []

@@ -10,6 +10,7 @@ them, so it is safe to track.
   scripts/check_private_leaks.py            # staged changes (pre-commit hook)
   scripts/check_private_leaks.py --tracked  # every tracked file
   scripts/check_private_leaks.py --history  # every commit message (audit)
+  scripts/check_private_leaks.py --message FILE   # one message (commit-msg hook)
 """
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.privacy import (  # noqa: E402
     local_private_phrases,
     scan_commit_messages,
+    scan_message_file,
     scan_staged,
     scan_tracked_files,
 )
@@ -30,7 +32,9 @@ def main() -> int:
     if not phrases:
         print("check-private-leaks: no local queue data; nothing to check against")
         return 0
-    if mode == "--tracked":
+    if mode == "--message":
+        findings = scan_message_file(sys.argv[2], phrases)
+    elif mode == "--tracked":
         findings = scan_tracked_files(phrases)
     elif mode == "--history":
         findings = scan_commit_messages(phrases) + scan_tracked_files(phrases)
