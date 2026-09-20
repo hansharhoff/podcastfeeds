@@ -1146,3 +1146,27 @@ def test_parse_feed_routes_hn_urls_and_dedupes_across_terms(monkeypatch):
     parsed = _run(ingest._parse_feed("hn://search?q=OpenAI,Claude&points=150&days=7"))
     assert parsed.bozo is False
     assert [e["id"] for e in parsed.entries] == ["hn:2", "hn:3", "hn:1"]  # newest first
+
+
+def test_feed_fetch_refuses_a_redirect_into_a_private_address(monkeypatch):
+    # Feed URLs come from sources.yaml rather than a stranger, but a feed host
+    # that 302s inward is the same SSRF shape and the guard costs nothing.
+    import httpx
+    import pytest
+
+    from app import extract, ingest
+
+    def handler(request):
+        if request.url.host == "feeds.example":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:8080/"})
+        return httpx.Response(200, content=b"<rss/>")
+
+    # ingest does `from .extract import _client`, so it holds its own
+    # reference — patch the name ingest actually calls.
+    real = extract._client
+    monkeypatch.setattr(ingest, "_client",
+                        lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(extract, "_blocked_target", lambda u: "127.0.0.1" in u)
+    with pytest.raises(Exception) as exc:
+        _run(ingest._fetch_feed_bytes("https://feeds.example/rss"))
+    assert "127.0.0.1" in str(exc.value)

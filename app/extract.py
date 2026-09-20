@@ -55,6 +55,30 @@ def _blocked_target(url: str) -> bool:
     return False
 
 
+class BlockedTarget(RuntimeError):
+    """A request — or one of its redirect hops — pointed at a non-public address."""
+
+
+async def _guard_hop(request) -> None:
+    if _blocked_target(str(request.url)):
+        raise BlockedTarget(f"refusing to fetch non-public address: {request.url}")
+
+
+def _client(**kwargs) -> httpx.AsyncClient:
+    """An httpx client that re-checks EVERY hop, not just the submitted URL.
+
+    Checking once up front and then following redirects is not a guard: a
+    public host that 302s to 169.254.169.254 or a LAN address was fetched and
+    narrated. httpx fires request event hooks per hop, including redirects, so
+    the check belongs there. The up-front _blocked_target() calls are kept as
+    defence in depth — they also avoid a pointless connection.
+    """
+    hooks = dict(kwargs.pop("event_hooks", None) or {})
+    hooks["request"] = [*hooks.get("request", []), _guard_hop]
+    kwargs.setdefault("follow_redirects", True)
+    return httpx.AsyncClient(event_hooks=hooks, **kwargs)
+
+
 # Social platforms whose post pages are typically a pointer, not the payload
 # (ep. 253 feedback: a tweet pointing at an essay got narrated as the tweet's
 # own short excerpt instead of the essay). Mastodon is federated — any domain
@@ -139,8 +163,8 @@ async def resolve_short_link(url: str) -> str:
     if _blocked_target(url):
         return url
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=15, headers={"User-Agent": UA}
+        async with _client(
+            timeout=15, headers={"User-Agent": UA}
         ) as client, client.stream("GET", url) as resp:
             return str(resp.url)
     except Exception:
@@ -236,9 +260,7 @@ async def fetch_html(url: str) -> str:
     cookie = _cookie_for(url)
     if cookie:
         headers["Cookie"] = cookie
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=30, headers=headers
-    ) as client:
+    async with _client(timeout=30, headers=headers) as client:
         resp = await client.get(url)
         try:
             resp.raise_for_status()
@@ -255,9 +277,8 @@ async def fetch_html(url: str) -> str:
 
 
 async def _fetch_via_proxy(url: str) -> str:
-    async with httpx.AsyncClient(
-        follow_redirects=True, timeout=45,
-        headers={"User-Agent": UA, "X-Return-Format": "html"},
+    async with _client(
+        timeout=45, headers={"User-Agent": UA, "X-Return-Format": "html"},
     ) as client:
         resp = await client.get(READER_PROXY + url)
         resp.raise_for_status()
@@ -327,8 +348,8 @@ async def fetch_pdf(url: str) -> tuple[str, str]:
     if _blocked_target(url):
         raise RuntimeError(f"refusing to fetch non-public address: {url}")
     headers = {"User-Agent": UA}
-    async with httpx.AsyncClient(
-        timeout=120, follow_redirects=True, headers=headers
+    async with _client(
+        timeout=120, headers=headers
     ) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -990,9 +1011,7 @@ async def fetch_image_jpeg(url: str, max_px: int = 1000) -> bytes | None:
         log.warning("refusing to fetch image from non-public address: %s", url)
         return None
     try:
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=30, headers={"User-Agent": UA}
-        ) as client:
+        async with _client(timeout=30, headers={"User-Agent": UA}) as client:
             resp = await client.get(url)
             resp.raise_for_status()
         img = Image.open(io.BytesIO(resp.content))

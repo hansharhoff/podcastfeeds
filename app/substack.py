@@ -15,10 +15,8 @@ import logging
 import re
 from urllib.parse import urlparse
 
-import httpx
-
 from .config import SourceDef
-from .extract import UA, _cookie_for, is_paywalled
+from .extract import UA, _client, _cookie_for, is_paywalled
 
 log = logging.getLogger("podcastfeeds")
 
@@ -70,8 +68,7 @@ async def _api_json(url: str, cookie_url: str | None = None) -> dict | None:
     if cookie:
         headers["Cookie"] = cookie
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30,
-                                     headers=headers) as client:
+        async with _client(timeout=30, headers=headers) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             return resp.json()

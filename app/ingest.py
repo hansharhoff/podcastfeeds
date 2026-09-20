@@ -18,6 +18,7 @@ from . import db
 from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_voice
 from .db import Episode, utcnow
 from .extract import (
+    _client,
     detect_language,
     dr_liveblog_html,
     extract_article,
@@ -131,8 +132,8 @@ async def _fetch_feed_bytes(url: str) -> tuple[bytes, int, str]:
     overlapping feeds could interleave save/restore and leave it clobbered.
     Fetching here also means a failed parse can report what actually arrived.
     """
-    async with httpx.AsyncClient(timeout=FEED_TIMEOUT, follow_redirects=True,
-                                 headers={"User-Agent": FEED_UA}) as client:
+    async with _client(timeout=FEED_TIMEOUT,
+                       headers={"User-Agent": FEED_UA}) as client:
         resp = await client.get(url)
         return resp.content, resp.status_code, resp.headers.get("content-type", "")
 

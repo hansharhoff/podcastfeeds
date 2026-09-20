@@ -868,3 +868,61 @@ def test_paragraph_without_footnotes_is_still_one_segment():
         "<p>One sentence. And a second one here.</p>")
     assert [(s["type"], s["text"]) for s in segments] == [
         ("text", "One sentence. And a second one here.")]
+
+
+# ── SSRF: the guard must hold across redirects ───────────────────────────
+# _blocked_target() checked the submitted URL once, then the client followed
+# redirects freely — so a public host that 302s to 169.254.169.254 or a LAN
+# address got fetched and narrated. Worse for images, where the <img src> is
+# attacker-influenced content from a page we just downloaded.
+
+def _redirecting_transport(target):
+    import httpx
+
+    def handler(request):
+        if request.url.host == "public.example":
+            return httpx.Response(302, headers={"location": target})
+        return httpx.Response(200, text="SECRET", headers={"content-type": "text/html"})
+    return httpx.MockTransport(handler)
+
+
+def _patch_client(monkeypatch, transport):
+    import httpx
+
+    from app import extract
+    real = extract._client
+
+    def fake(**kw):
+        kw.pop("transport", None)
+        return real(transport=transport, **kw)
+    monkeypatch.setattr(extract, "_client", fake)
+    return httpx
+
+
+def test_fetch_html_refuses_a_redirect_into_link_local(monkeypatch):
+    import pytest
+
+    from app import extract
+    _patch_client(monkeypatch, _redirecting_transport(
+        "http://169.254.169.254/latest/meta-data/"))
+    monkeypatch.setattr(extract, "_blocked_target",
+                        lambda u: "169.254.169.254" in u or "10.0.0" in u)
+    with pytest.raises(Exception) as exc:
+        _run_async(extract.fetch_html("https://public.example/start"))
+    assert "169.254.169.254" in str(exc.value)
+
+
+def test_fetch_html_still_follows_a_redirect_to_a_public_host(monkeypatch):
+    from app import extract
+    _patch_client(monkeypatch, _redirecting_transport("https://elsewhere.example/ok"))
+    monkeypatch.setattr(extract, "_blocked_target", lambda u: False)
+    assert _run_async(extract.fetch_html("https://public.example/start")) == "SECRET"
+
+
+def test_fetch_image_refuses_a_redirect_into_the_lan(monkeypatch):
+    # An <img src> on a fetched page is attacker-influenced; this must not
+    # raise into the pipeline, it must decline and return None.
+    from app import extract
+    _patch_client(monkeypatch, _redirecting_transport("http://10.0.0.5/admin.png"))
+    monkeypatch.setattr(extract, "_blocked_target", lambda u: "10.0.0" in u)
+    assert _run_async(extract.fetch_image_jpeg("https://public.example/start")) is None
