@@ -71,6 +71,26 @@ Share an article from the phone: open the UI page and paste a URL, or use the
 field `url={{clipboard/share text}}` — then it shows up in the Inbox feed a
 minute later.
 
+## Keeping the reading queue private
+
+This repo is public and the TickTick reading queue is not. Real queue titles
+once leaked in as example data, so a pre-commit hook checks staged changes
+against the *local* queue — the phrases are read from `data/` at runtime and
+appear nowhere in tracked code. Enable it once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+```bash
+scripts/check_private_leaks.py --tracked   # audit the working tree
+scripts/check_private_leaks.py --history   # audit every commit message
+git commit --no-verify                     # override once, deliberately
+```
+
+It no-ops where the private data is absent (CI, a fresh clone) — it is meant to
+run on the machine that has the secrets.
+
 ## Configuring sources
 
 Copy `config/sources.yaml.example` to `config/sources.yaml` (git-ignored, so
