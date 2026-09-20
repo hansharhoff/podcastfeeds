@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from datetime import UTC, datetime, timedelta
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import feedparser
 import httpx
@@ -137,6 +137,96 @@ async def _fetch_feed_bytes(url: str) -> tuple[bytes, int, str]:
         return resp.content, resp.status_code, resp.headers.get("content-type", "")
 
 
+# ── Hacker News via the Algolia index ────────────────────────────────────
+# hnrss.org returns an nginx 502 on roughly half of all polls (see the payload
+# logged by _feed_diagnostics), which costs the once-daily digest its HN input
+# every other day. Algolia is the reliable index, but it cannot express
+# hnrss's "A OR B OR C": ANDing every word is the default, advancedSyntax OR
+# returns nothing, and optionalWords matches almost anything — it offered "What
+# Zig felt like, coming from Rust" for an AI query. So: one query per term.
+#
+# restrictSearchableAttributes=title because Algolia otherwise matches the URL
+# and the post body (a Jemalloc release matched "GPT" on its url), and
+# typoTolerance=false because three-letter terms otherwise match near-misses.
+HN_ALGOLIA = "https://hn.algolia.com/api/v1/search_by_date"
+HN_DEFAULT_POINTS = 150
+HN_DEFAULT_DAYS = 7
+HN_PER_TERM = 20
+
+
+def _hn_query(url: str) -> tuple[list[str], int, int]:
+    """hn://search?q=A,B&points=150&days=7 -> (terms, min points, window)."""
+    q = parse_qs(urlparse(url).query)
+    terms = [t.strip() for t in (q.get("q", [""])[0]).split(",") if t.strip()]
+    points = int((q.get("points") or [HN_DEFAULT_POINTS])[0])
+    days = int((q.get("days") or [HN_DEFAULT_DAYS])[0])
+    return terms, points, days
+
+
+def _hn_entry(hit: dict) -> dict:
+    """One Algolia hit as a feedparser-shaped entry.
+
+    Mirrors what hnrss put in its description, because the digest prompt reads
+    these summaries and the score is the whole point of the source — it is the
+    "what the knowledgeable crowd is hyping" signal, not just a headline."""
+    oid = str(hit.get("objectID") or "")
+    discussion = f"https://news.ycombinator.com/item?id={oid}"
+    points = hit.get("points") or 0
+    comments = hit.get("num_comments") or 0
+    return {
+        "id": f"hn:{oid}",
+        # Text posts (Ask HN / Show HN) carry no url — there the thread IS the
+        # content, so the discussion is the right thing to narrate.
+        "link": hit.get("url") or discussion,
+        "title": hit.get("title") or "",
+        "summary": (f"<p>Points: {points}</p><p># Comments: {comments}</p>"
+                    f'<p>Comments URL: <a href="{discussion}">{discussion}</a></p>'),
+        "published_parsed": time.gmtime(hit.get("created_at_i") or 0),
+    }
+
+
+async def _hn_search_hits(term: str, points: int, days: int) -> list[dict]:
+    since = int(time.time()) - days * 86400
+    async with httpx.AsyncClient(timeout=FEED_TIMEOUT,
+                                 headers={"User-Agent": FEED_UA}) as client:
+        resp = await client.get(HN_ALGOLIA, params={
+            "query": term,
+            "tags": "story",
+            "hitsPerPage": HN_PER_TERM,
+            "restrictSearchableAttributes": "title",
+            "typoTolerance": "false",
+            "numericFilters": f"points>={points},created_at_i>{since}",
+        })
+        resp.raise_for_status()
+        return resp.json().get("hits", []) or []
+
+
+async def _fetch_hn_search(url: str):
+    """Every term's newest high-scoring stories, merged newest-first."""
+    terms, points, days = _hn_query(url)
+    results = await asyncio.gather(
+        *(_hn_search_hits(t, points, days) for t in terms),
+        return_exceptions=True,
+    )
+    hits: dict[str, dict] = {}
+    failed = 0
+    for term, res in zip(terms, results, strict=False):
+        if isinstance(res, Exception):
+            failed += 1
+            log.warning("hn search failed for %r: %s", term, res)
+            continue
+        for hit in res:
+            hits.setdefault(str(hit.get("objectID")), hit)
+    entries = [_hn_entry(h) for h in sorted(
+        hits.values(), key=lambda h: h.get("created_at_i") or 0, reverse=True)]
+    log.info("hn search: %d terms (%d failed) -> %d unique stories",
+             len(terms), failed, len(entries))
+    return feedparser.FeedParserDict(
+        entries=entries, bozo=bool(terms) and failed == len(terms),
+        status=200, feed=feedparser.FeedParserDict(title="Hacker News"),
+    )
+
+
 def _feed_diagnostics(body: bytes, status: int, ctype: str, parsed) -> str:
     """What came back, for a feed that would not parse.
 
@@ -167,6 +257,8 @@ def _feed_error(parsed) -> str:
 
 
 async def _parse_feed(url: str):
+    if url.startswith("hn:"):
+        return await _fetch_hn_search(url)
     body, status, ctype = await _fetch_feed_bytes(url)
     parsed = feedparser.parse(body)
     parsed.status = status

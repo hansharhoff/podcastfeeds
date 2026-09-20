@@ -1076,3 +1076,73 @@ def test_feed_diagnostics_snippet_is_bounded(monkeypatch):
 
     huge = b"<rss>" + b"x" * 5000
     assert len(ingest._feed_diagnostics(huge, 200, "application/xml", None)) < 600
+
+
+# ── Hacker News via Algolia instead of hnrss ─────────────────────────────
+# hnrss.org serves nginx 502s on ~half of all polls, which cost the daily
+# digest its HN input every other day. Algolia is the reliable index, but it
+# cannot express hnrss's "A OR B OR C": ANDing is the default, advancedSyntax
+# OR returns nothing, and optionalWords matches almost anything (it returned
+# "What Zig felt like, coming from Rust" for an AI query). One query per term,
+# restricted to the title, is the faithful translation.
+
+def test_hn_query_parses_terms_points_and_window():
+    from app.ingest import _hn_query
+
+    terms, points, days = _hn_query(
+        "hn://search?q=OpenAI,Anthropic,Claude&points=150&days=7")
+    assert terms == ["OpenAI", "Anthropic", "Claude"]
+    assert points == 150
+    assert days == 7
+
+
+def test_hn_query_has_sane_defaults():
+    from app.ingest import _hn_query
+
+    terms, points, days = _hn_query("hn://search?q=GPT")
+    assert terms == ["GPT"] and points > 0 and days > 0
+
+
+def test_hn_entry_links_to_the_article_and_records_score():
+    from app.ingest import _hn_entry
+
+    e = _hn_entry({"objectID": "42", "title": "Big AI thing", "points": 609,
+                   "num_comments": 216, "created_at_i": 1_700_000_000,
+                   "url": "https://example.com/post"})
+    assert e["link"] == "https://example.com/post"
+    assert e["id"] == "hn:42"
+    assert e["title"] == "Big AI thing"
+    assert "609" in e["summary"] and "216" in e["summary"]
+    assert e["published_parsed"].tm_year == 2023
+
+
+def test_hn_entry_for_a_text_post_links_to_the_discussion():
+    # Ask HN / Show HN text posts carry no url; the thread IS the content.
+    from app.ingest import _hn_entry
+
+    e = _hn_entry({"objectID": "99", "title": "Ask HN: anything?", "points": 200,
+                   "num_comments": 5, "created_at_i": 1_700_000_000, "url": None})
+    assert e["link"] == "https://news.ycombinator.com/item?id=99"
+
+
+def test_parse_feed_routes_hn_urls_and_dedupes_across_terms(monkeypatch):
+    from app import ingest
+
+    hits = {
+        "OpenAI": [{"objectID": "1", "title": "A", "points": 200, "num_comments": 1,
+                    "created_at_i": 100, "url": "http://a"},
+                   {"objectID": "2", "title": "Shared", "points": 300,
+                    "num_comments": 2, "created_at_i": 300, "url": "http://s"}],
+        "Claude": [{"objectID": "2", "title": "Shared", "points": 300,
+                    "num_comments": 2, "created_at_i": 300, "url": "http://s"},
+                   {"objectID": "3", "title": "B", "points": 400, "num_comments": 3,
+                    "created_at_i": 200, "url": "http://b"}],
+    }
+
+    async def fake_hits(term, points, days):
+        return hits[term]
+    monkeypatch.setattr(ingest, "_hn_search_hits", fake_hits)
+
+    parsed = _run(ingest._parse_feed("hn://search?q=OpenAI,Claude&points=150&days=7"))
+    assert parsed.bozo is False
+    assert [e["id"] for e in parsed.entries] == ["hn:2", "hn:3", "hn:1"]  # newest first

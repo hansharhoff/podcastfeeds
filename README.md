@@ -83,6 +83,18 @@ aggregate several feeds), `title_filter` (regex, e.g. release posts only),
 `narrate_mode: summary` (LLM overview instead of full read — for release
 notes/changelogs), `prefer_existing_audio`, `digest_max_items`.
 
+A `urls` entry may also be a Hacker News search instead of a feed:
+
+```
+hn://search?q=OpenAI,Anthropic,Claude&points=150&days=2
+```
+
+Each comma-separated term is queried separately against the HN Algolia index
+(title only) and the results are merged newest-first, keeping stories at or
+above `points` from the last `days`. One query per term because Algolia ANDs a
+multi-word query and its OR syntax returns nothing, so `q=A,B` means "A or B".
+This replaced hnrss.org, which answers roughly half of all polls with a 502.
+
 ## Episode features
 
 - **Voice roster** — every source/blogger without a fixed `voice:` gets one
