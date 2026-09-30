@@ -16,6 +16,13 @@ from sqlmodel import select
 
 from . import db
 from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_voice
+from .courses import (
+    course_intro,
+    course_meta,
+    course_outro,
+    course_show_notes,
+    episode_title,
+)
 from .db import Episode, utcnow
 from .extract import (
     _client,
@@ -932,6 +939,12 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         s.commit()
         title, link, description = ep.title, ep.link, ep.description
         source_text = ep.source_text
+        course = course_meta(ep.provenance)
+
+    def _keep_course(prov_: dict) -> dict:
+        # Skip exits rewrite provenance; the course key must survive them or
+        # a later redo narrates the part as a plain article.
+        return {**prov_, "course": course} if course else prov_
 
     try:
         is_pdf = bool(link) and urlparse(link).path.lower().endswith(".pdf")
@@ -944,9 +957,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 ep = s.get(Episode, ep_id)
                 ep.status = "skipped"
                 ep.error = "PDF source — not narratable"
-                ep.provenance = json.dumps({
+                ep.provenance = json.dumps(_keep_course({
                     "pipeline_version": PIPELINE_VERSION, "skipped": "pdf", "link": link,
-                })
+                }))
                 s.add(ep)
                 s.commit()
             return
@@ -1113,13 +1126,17 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 ep = s.get(Episode, ep_id)
                 ep.status = "skipped"
                 ep.error = "paywalled — preview too short to narrate"
-                ep.provenance = json.dumps({
+                ep.provenance = json.dumps(_keep_course({
                     "pipeline_version": PIPELINE_VERSION, "skipped": "paywall",
                     "link": link, "body_chars": len(body),
-                })
+                }))
                 s.add(ep)
                 s.commit()
             return
+        if course and not link:
+            # A course script is the finished spoken text: nothing to fetch,
+            # and the strip_html fallback below would eat "Vec<T>" or "a < b".
+            body = source_text
         if len(body) < 200:
             # Page unfetchable/paywalled: best remaining source is the feed
             # entry itself. NEVER the description — a previous bad run may have
@@ -1143,10 +1160,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     ep = s.get(Episode, ep_id)
                     ep.status = "skipped"
                     ep.error = "no article content (discussion/thread or link-only post)"
-                    ep.provenance = json.dumps({
+                    ep.provenance = json.dumps(_keep_course({
                         "pipeline_version": PIPELINE_VERSION, "skipped": "no-content",
                         "link": link,
-                    })
+                    }))
                     s.add(ep)
                     s.commit()
                 return
@@ -1164,7 +1181,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                         len(body), dropped_chars,
                         100 * dropped_chars / len(body), source.max_chars, source.slug)
             body = body[: source.max_chars]
-        language = detect_language(f"{title}\n{body}")
+        language = course["language"] if course else detect_language(f"{title}\n{body}")
         # Voice roster key: the source is the "blogger" for rss feeds; for the
         # inbox each site/domain is its own blogger and keeps its own voice.
         roster_key = source.slug
@@ -1203,10 +1220,15 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         # copy — ep. 403 came back as "grc.com: grc.com: Untitled". RSS sources
         # hid this because their title is refreshed from the feed every time.
         title = title.removeprefix("[Preview] ").removeprefix(f"{source_label}: ")
-        intro = _episode_intro(title, source.name, language, preview=is_preview,
-                               fetch_issue=fetch_issue)
+        if course:
+            title = episode_title(course)
+        intro = course_intro(course) if course else _episode_intro(
+            title, source.name, language, preview=is_preview, fetch_issue=fetch_issue)
+
         # Outro: previews get an explicit "that was the free preview" sign-off.
         def outro(has_images: bool) -> str:
+            if course:
+                return course_outro(course)
             return (_preview_outro(language, fetch_issue=fetch_issue)
                     if is_preview else _episode_outro(language, has_images))
         cover = _source_cover(source)
@@ -1219,6 +1241,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             "link": link, "language": language,
             "generated_at": utcnow().isoformat(),
         }
+        if course:
+            prov["course"] = course
         if dropped_chars:
             # How much of the article never made it into the audio, so a
             # silently-shortened episode is visible in the admin UI and to any
@@ -1410,6 +1434,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     artist=source.name, date=str(utcnow().year), cover=cover,
                 )
 
+        if course and not link:
+            show_notes = course_show_notes(course)
         if is_preview:
             prov["preview"] = True
             if fetch_issue:
@@ -1425,14 +1451,20 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             ep = s.get(Episode, ep_id)
             # Feed title makes the source explicit (esp. in the combined feed) and
             # flags a preview up front.
-            base_title = f"{source_label}: {title}" if source.type != "digest" else title
-            ep.title = f"[Preview] {base_title}" if is_preview else base_title
+            if course:
+                ep.title = title  # already episode_title(course); no source label
+            else:
+                base_title = f"{source_label}: {title}" if source.type != "digest" else title
+                ep.title = f"[Preview] {base_title}" if is_preview else base_title
             ep.audio_file = filename
             ep.audio_bytes = size
             ep.audio_seconds = seconds
             ep.voice = voice
             ep.status = "ready"
-            ep.published_at = utcnow()
+            # A course part keeps the slot create_course gave it, so a redo
+            # or a slow chapter never jumps the series order.
+            if not (course and ep.published_at):
+                ep.published_at = utcnow()
             # Belt and braces: _interleaved_shownotes already budgets on the
             # rendered length, so this only ever fires on an unforeseen shape.
             ep.description = _safe_truncate_html(show_notes, 25000)

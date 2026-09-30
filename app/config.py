@@ -35,7 +35,7 @@ def get_token() -> str:
 
 # Bump whenever script-generation logic changes — recorded in every episode's
 # provenance so feedback ("episode X sounded wrong") maps to the code that made it.
-PIPELINE_VERSION = "2026.07.16-15-review-hardening"
+PIPELINE_VERSION = "2026.09.30-audio-courses"
 
 BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")  # e.g. https://YOUR-MACHINE.YOUR-TAILNET.ts.net
 PORT = int(os.environ.get("PORT", "8080"))

@@ -159,3 +159,148 @@ def test_course_show_notes_has_a_header_and_the_notes():
     html = course_show_notes(_meta(show_notes_md="See `cargo build`."))
     assert html.startswith("<p><strong>Shape Up</strong>: Borrowing</p>")
     assert "<code>cargo build</code>" in html
+
+
+def _fake_tts(monkeypatch, calls):
+    from app import ingest
+
+    async def fake_synthesize(script, **kw):
+        calls.append({"title": kw.get("title"), "text": script})
+        return "course.mp3", 100, 60
+
+    async def fake_blocks(blocks, **kw):
+        calls.append({"title": kw.get("title"),
+                      "text": "\n\n".join(b["text"] for b in blocks)})
+        return "course.mp3", 100, 60
+
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+    monkeypatch.setattr(ingest, "synthesize_blocks", fake_blocks)
+
+
+def test_script_part_is_narrated_verbatim_with_course_framing(monkeypatch):
+    from app.courses import course_meta, create_course, parse_course, render_course
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+    data = _payload("render-script", n=2)
+    tricky = SCRIPT + " A Vec<T> owns its buffer, and R&D says a < b."
+    data["episodes"][0].update(script=tricky, show_notes_md="```\nlet v: Vec<u8>;\n```")
+    ids = create_course(parse_course(data))
+    with db.session() as s:
+        before = s.get(Episode, ids[0]).published_at
+    _run(render_course(ids))
+
+    with db.session() as s:
+        ep = s.get(Episode, ids[0])
+    assert ep.status == "ready"
+    assert ep.title == "Rust ownership (1/2): Part 1 title"
+    assert ep.published_at == before
+    assert course_meta(ep.provenance)["part"] == 1
+    assert "<pre><code>let v: Vec&lt;u8&gt;;</code></pre>" in ep.description
+    text = calls[0]["text"]
+    assert text.startswith("Rust ownership, part 1 of 2: Part 1 title.")
+    assert "A Vec<T> owns its buffer, and R&D says a < b." in text
+    assert text.rstrip().endswith("Code and links are in the show notes.")
+    # render order is part order; the ID3 title is the full episode title
+    assert [c["title"] for c in calls] == ["Rust ownership (1/2): Part 1 title",
+                                           "Rust ownership (2/2): Part 2 title"]
+
+
+def test_url_part_uses_article_pipeline_with_course_framing(monkeypatch):
+    from app import ingest
+    from app.courses import create_course, parse_course, render_course
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+    page = ("<html><head><title>Chapter One | Book</title></head><body><article>"
+            # varied text: the extractor may drop repeated identical paragraphs
+            + "".join(f"<p>Paragraph {i}: shaping sets boundaries on project {i} "
+                      "before anyone commits to building it.</p>" for i in range(12))
+            + "</article></body></html>")
+
+    async def fake_fetch_html(url):
+        return page
+
+    monkeypatch.setattr(ingest, "fetch_html", fake_fetch_html)
+    data = _payload("render-url", n=1, kind="audiobook", title="Shape Up")
+    data["episodes"][0] = {"part": 1, "title": "Principles of Shaping",
+                           "url": "https://book.example/shape-up/1"}
+    ids = create_course(parse_course(data))
+    _run(render_course(ids))
+
+    with db.session() as s:
+        ep = s.get(Episode, ids[0])
+    assert ep.status == "ready", ep.error
+    assert ep.title == "Shape Up (1/1): Principles of Shaping"
+    assert calls[0]["text"].startswith("Shape Up, chapter 1: Principles of Shaping.")
+    assert calls[0]["text"].rstrip().endswith("The end of Shape Up.")
+
+
+def test_failed_part_does_not_block_later_parts(monkeypatch):
+    from app import ingest
+    from app.courses import create_course, parse_course, render_course
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+
+    async def boom(url):
+        raise RuntimeError("chapter host down")
+
+    monkeypatch.setattr(ingest, "fetch_html", boom)
+    data = _payload("render-fail", n=2, kind="audiobook")
+    data["episodes"][0] = {"part": 1, "title": "Gone",
+                           "url": "https://book.example/gone"}
+    ids = create_course(parse_course(data))
+    _run(render_course(ids))
+    with db.session() as s:
+        assert s.get(Episode, ids[0]).status == "error"
+        assert s.get(Episode, ids[1]).status == "ready"
+
+
+def test_skip_path_keeps_course_meta(monkeypatch):
+    """The skip exits rewrite provenance; without the course key a later redo
+    would narrate the chapter as a plain article with the wrong title."""
+    from app import ingest
+    from app.courses import course_meta, create_course, parse_course, render_course
+
+    async def near_empty(url):
+        return "<html><body><p>Hi.</p></body></html>"
+
+    monkeypatch.setattr(ingest, "fetch_html", near_empty)
+    data = _payload("render-skip", n=1, kind="audiobook")
+    data["episodes"][0] = {"part": 1, "title": "Empty",
+                           "url": "https://book.example/empty"}
+    ids = create_course(parse_course(data))
+    _run(render_course(ids))
+    with db.session() as s:
+        ep = s.get(Episode, ids[0])
+    assert ep.status == "skipped"
+    assert course_meta(ep.provenance)["course_id"] == "render-skip"
+
+
+def test_redo_keeps_course_meta_and_order(monkeypatch):
+    from app import ingest
+    from app.courses import (
+        course_meta,
+        create_course,
+        learning_source,
+        parse_course,
+        render_course,
+    )
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+    ids = create_course(parse_course(_payload("render-redo", n=1)))
+    _run(render_course(ids))
+    with db.session() as s:
+        first = s.get(Episode, ids[0])
+        published, first.status = first.published_at, "pending"
+        s.add(first)
+        s.commit()
+    _run(ingest.process_episode(ids[0], learning_source()))
+    with db.session() as s:
+        ep = s.get(Episode, ids[0])
+    assert ep.status == "ready" and ep.published_at == published
+    assert ep.title == "Rust ownership (1/1): Part 1 title"
+    assert course_meta(ep.provenance)["part"] == 1
+    assert calls[-1]["text"].startswith("Rust ownership, part 1 of 1: Part 1 title.")

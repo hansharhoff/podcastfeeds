@@ -256,3 +256,14 @@ def course_show_notes(meta: dict) -> str:
             f"{_esc(meta['part_title'])}</p>")
     notes = markdown_to_html(meta.get("show_notes_md") or "")
     return head + ("\n" + notes if notes else "")
+
+
+async def render_course(ep_ids: list[int]) -> None:
+    """Render parts one at a time, in part order. process_episode records its
+    own failures (status error, retry button), so one bad chapter never stops
+    the parts after it. Parts already ready are a no-op."""
+    from .ingest import process_episode  # ingest imports this module
+
+    source = learning_source()
+    for ep_id in ep_ids:
+        await process_episode(ep_id, source)
