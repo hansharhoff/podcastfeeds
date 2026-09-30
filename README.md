@@ -12,6 +12,7 @@ config/sources.yaml ──► scheduler (APScheduler)
                           │  rss:    each new entry → one episode
                           │  digest: entries since last run → one narrated episode
                           │  inbox:  URLs you share from the phone
+                          │  learning: approved courses POSTed by the audio-course skill
                           ▼
               trafilatura extract → edge-tts (chunked) → ffmpeg concat → mp3 + ID3
                           ▼
@@ -170,6 +171,28 @@ This replaced hnrss.org, which answers roughly half of all polls with a 502.
   domain; the fetcher then reads paid posts as you. Cookies eventually expire
   (~6-12 months): the symptom is paywalled-preview episodes; the fix is
   re-pasting a fresh cookie.
+
+## Audio courses and audiobooks
+
+The `audio-course` skill (hansharhoff-skills marketplace) turns a topic into an
+approved audio course, or a public book into an audiobook, from any Claude Code
+session. It POSTs the finished parts here; they land in the **Learning** feed
+(`/feeds/learning.xml`), which is deliberately **not** part of `all.xml`, so
+subscribe to it separately.
+
+- `POST /{token}/api/course` with `{course_id, title, kind: course|audiobook,
+  language: da|en, episodes: [{part, title, script | url, show_notes_md?,
+  verbatim?}]}`. Caps: 8 parts per course, 60 per audiobook. Reposting the same
+  `course_id` only fills in missing parts and retries failed ones.
+- `GET /{token}/api/course/{course_id}` reports each part's status.
+- Parts render one at a time in order and keep their feed order across redos.
+- After `retention_days` the MP3 is deleted but the part is kept as
+  `archived` with its script; **↻ restore** on the admin page re-narrates it.
+- Skill setup: export `PODCASTFEEDS_URL` (e.g. `http://localhost:8080`) and
+  either `PODCASTFEEDS_TOKEN` or `PODCASTFEEDS_TOKEN_FILE` (path to
+  `data/token.txt`).
+- Overriding the source in `sources.yaml` (e.g. a fixed teacher `voice`) needs
+  `type: learning` and `in_all_feed: false`.
 
 ## Reboot resilience
 
