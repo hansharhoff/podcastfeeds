@@ -101,3 +101,61 @@ def test_course_meta_tolerates_non_course_provenance():
     assert course_meta("") is None
     assert course_meta("not json") is None
     assert course_meta('{"pipeline_version": "x"}') is None
+
+
+def _meta(**over):
+    base = {"course_id": "m", "course_title": "Shape Up", "kind": "course",
+            "language": "en", "part": 2, "parts": 4, "part_title": "Borrowing",
+            "verbatim": False, "show_notes_md": ""}
+    return {**base, **over}
+
+
+@pytest.mark.parametrize("over, expected", [
+    ({}, "Shape Up, part 2 of 4: Borrowing."),
+    ({"language": "da"}, "Shape Up, del 2 af 4: Borrowing."),
+    ({"kind": "audiobook"}, "Shape Up, chapter 2: Borrowing."),
+    ({"kind": "audiobook", "language": "da"}, "Shape Up, kapitel 2: Borrowing."),
+])
+def test_course_intro(over, expected):
+    from app.courses import course_intro
+
+    assert course_intro(_meta(**over)) == expected
+
+
+def test_course_outro_points_ahead_and_at_notes():
+    from app.courses import course_outro
+
+    assert course_outro(_meta()) == "That was part 2 of 4. Next up: part 3."
+    assert course_outro(_meta(part=4)) == "That was the final part of Shape Up."
+    assert course_outro(_meta(show_notes_md="`x`")).endswith(
+        "Code and links are in the show notes.")
+    assert course_outro(_meta(language="da", part=4)) == "Det var sidste del af Shape Up."
+    assert course_outro(_meta(kind="audiobook")) == "End of chapter 2."
+    assert course_outro(_meta(kind="audiobook", part=4)) == "The end of Shape Up."
+
+
+def test_markdown_escapes_markup_and_only_links_http():
+    from app.courses import markdown_to_html
+
+    html = markdown_to_html(
+        "Intro with `Vec<T>` and <script>alert(1)</script>.\n\n"
+        "- [docs](https://doc.rust-lang.org/book/)\n"
+        "- [bad](javascript:alert(1))\n"
+        '- [quote](https://x.test/a"b)\n\n'
+        "```rust\nfn main() { let v: Vec<u8> = vec![]; }\n```\n"
+    )
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert "<code>Vec&lt;T&gt;</code>" in html
+    assert '<a href="https://doc.rust-lang.org/book/">docs</a>' in html
+    assert 'href="javascript' not in html
+    assert 'href="https://x.test/a&quot;b"' in html
+    assert "<pre><code>fn main() { let v: Vec&lt;u8&gt; = vec![]; }</code></pre>" in html
+    assert html.count("<li>") == 3
+
+
+def test_course_show_notes_has_a_header_and_the_notes():
+    from app.courses import course_show_notes
+
+    html = course_show_notes(_meta(show_notes_md="See `cargo build`."))
+    assert html.startswith("<p><strong>Shape Up</strong>: Borrowing</p>")
+    assert "<code>cargo build</code>" in html

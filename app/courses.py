@@ -169,3 +169,90 @@ def create_course(req: CourseRequest) -> list[int]:
 def _find(s, slug: str, guid: str) -> Episode | None:
     return s.exec(select(Episode).where(
         Episode.source_slug == slug, Episode.guid == guid)).first()
+
+
+def course_intro(meta: dict) -> str:
+    title, part, parts, pt = (meta["course_title"], meta["part"],
+                              meta["parts"], meta["part_title"])
+    da = meta["language"] == "da"
+    if meta["kind"] == "audiobook":
+        return f"{title}, {'kapitel' if da else 'chapter'} {part}: {pt}."
+    return (f"{title}, del {part} af {parts}: {pt}." if da
+            else f"{title}, part {part} of {parts}: {pt}.")
+
+
+def course_outro(meta: dict) -> str:
+    title, part, parts = meta["course_title"], meta["part"], meta["parts"]
+    last = part >= parts
+    da = meta["language"] == "da"
+    if meta["kind"] == "audiobook":
+        if da:
+            text = f"Slut på {title}." if last else f"Slut på kapitel {part}."
+        else:
+            text = f"The end of {title}." if last else f"End of chapter {part}."
+    elif da:
+        text = (f"Det var sidste del af {title}." if last
+                else f"Det var del {part} af {parts}. Næste gang: del {part + 1}.")
+    else:
+        text = (f"That was the final part of {title}." if last
+                else f"That was part {part} of {parts}. Next up: part {part + 1}.")
+    if meta.get("show_notes_md"):
+        text += (" Kode og links findes i shownotes." if da
+                 else " Code and links are in the show notes.")
+    return text
+
+
+def _esc(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+_FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)^```[ \t]*$", re.S | re.M)
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+# Runs on already-escaped text, so a '"' in the URL is &quot; by now.
+_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+
+def _inline(text: str) -> str:
+    text = _INLINE_CODE_RE.sub(r"<code>\1</code>", _esc(text))
+    return _LINK_RE.sub(r'<a href="\2">\1</a>', text)
+
+
+def _blocks(text: str) -> list[str]:
+    out = []
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        if all(ln.startswith(("- ", "* ")) for ln in lines):
+            items = "".join(f"<li>{_inline(ln[2:])}</li>" for ln in lines)
+            out.append(f"<ul>{items}</ul>")
+        elif lines[0].startswith("#"):
+            out.append(f"<h3>{_inline(lines[0].lstrip('#').strip())}</h3>")
+            if lines[1:]:
+                out.append(f"<p>{_inline(' '.join(lines[1:]))}</p>")
+        else:
+            out.append(f"<p>{_inline(' '.join(lines))}</p>")
+    return out
+
+
+def markdown_to_html(md: str) -> str:
+    """Just enough markdown for show notes: fenced and inline code, http(s)
+    links, bullet lists, headings and paragraphs. Everything else is escaped,
+    so nothing in a script author's notes becomes live markup in a podcast
+    app's webview."""
+    out: list[str] = []
+    pos = 0
+    for m in _FENCE_RE.finditer(md):
+        out += _blocks(md[pos:m.start()])
+        out.append(f"<pre><code>{_esc(m.group(1).rstrip())}</code></pre>")
+        pos = m.end()
+    out += _blocks(md[pos:])
+    return "\n".join(out)
+
+
+def course_show_notes(meta: dict) -> str:
+    head = (f"<p><strong>{_esc(meta['course_title'])}</strong>: "
+            f"{_esc(meta['part_title'])}</p>")
+    notes = markdown_to_html(meta.get("show_notes_md") or "")
+    return head + ("\n" + notes if notes else "")
