@@ -70,6 +70,10 @@ def build_feed(
         query = select(Episode).where(Episode.status == "ready")
         if source is not None:
             query = query.where(Episode.source_slug == source.slug)
+        else:
+            hidden = [s.slug for s in config.sources if not s.in_all_feed]
+            if hidden:
+                query = query.where(Episode.source_slug.not_in(hidden))  # type: ignore[attr-defined]
         query = query.order_by(Episode.published_at.desc()).limit(limit)  # type: ignore[union-attr]
         episodes = s.exec(query).all()
 

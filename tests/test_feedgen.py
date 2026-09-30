@@ -63,3 +63,38 @@ def test_a_quote_in_a_passthrough_enclosure_url_cannot_break_the_feed():
                     "https://b", "tok", "N")
     node = _parse(xml)
     assert node.find("enclosure").get("url") == 'https://x.test/b".mp3'
+
+
+def _ready(slug: str, guid: str):
+    from app import db
+    from app.db import Episode, utcnow
+
+    with db.session() as s:
+        s.add(Episode(source_slug=slug, guid=guid, title=f"{slug} {guid}",
+                      status="ready", audio_file="a.mp3", audio_bytes=1,
+                      published_at=utcnow()))
+        s.commit()
+
+
+def test_learning_source_is_auto_added_and_kept_out_of_all():
+    from app.config import load_config
+
+    learning = next(s for s in load_config().sources if s.type == "learning")
+    assert learning.slug == "learning"
+    assert learning.in_all_feed is False
+
+
+def test_learning_episodes_stay_out_of_the_combined_feed():
+    """Courses are listened to on purpose, in order; mixed into all.xml they
+    would bury the news and scatter a series across the day's queue."""
+    from app.config import load_config
+    from app.feedgen import build_feed
+
+    _ready("learning", "feedtest-course:1")
+    _ready("inbox", "https://feedtest.example/a")
+    config = load_config()
+    combined = build_feed(config, "https://b", "tok")
+    assert "feedtest-course:1" not in combined
+    assert "feedtest.example/a" in combined
+    learning = next(s for s in config.sources if s.slug == "learning")
+    assert "feedtest-course:1" in build_feed(config, "https://b", "tok", source=learning)

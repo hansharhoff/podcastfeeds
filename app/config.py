@@ -45,7 +45,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 class SourceDef:
     slug: str
     name: str
-    type: str  # rss | digest | breaking | inbox
+    type: str  # rss | digest | breaking | inbox | learning
     url: str = ""
     urls: list[str] = field(default_factory=list)  # digest: aggregate several feeds
     voice: str = ""  # fixed voice; empty -> persistent per-source/blogger roster
@@ -74,6 +74,7 @@ class SourceDef:
     el_voice: str = ""  # ElevenLabs voice_id for this source's main voice (when EL enabled)
     paid: bool = False  # the user has a paid sub here: truncated paid posts are a
     #                     fetch problem to defer/surface, never a legitimate preview
+    in_all_feed: bool = True  # False keeps the source out of all.xml (learning)
 
     def feed_urls(self) -> list[str]:
         return self.urls or ([self.url] if self.url else [])
@@ -115,6 +116,21 @@ def load_config() -> AppConfig:
                 type="inbox",
                 description="Articles shared from your phone",
                 voice=defaults.get("voice", ""),
+            )
+        )
+
+    if not any(s.type == "learning" for s in sources):
+        # Audio courses and audiobooks from the audio-course skill. Never in
+        # all.xml: a series is listened to on purpose, not between news items.
+        # A sources.yaml override must set in_all_feed: false itself.
+        sources.append(
+            SourceDef(
+                slug="learning",
+                name=meta.get("learning_name", "Learning"),
+                type="learning",
+                description="Audio courses and audiobooks requested from Claude Code",
+                voice=defaults.get("voice", ""),
+                in_all_feed=False,
             )
         )
 
