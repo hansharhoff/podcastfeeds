@@ -157,14 +157,27 @@ async def healthz():
     return {"ok": True}
 
 
+def _admin_episodes(limit: int = 400) -> list[Episode]:
+    """The newest episodes, plus every archived course part. Archived parts
+    are always the oldest rows, so a newest-N list alone would never show
+    their restore button."""
+    with db.session() as s:
+        episodes = list(s.exec(
+            select(Episode).order_by(Episode.created_at.desc()).limit(limit)  # type: ignore[union-attr]
+        ).all())
+        seen = {e.id for e in episodes}
+        archived = s.exec(
+            select(Episode).where(Episode.status == "archived")
+            .order_by(Episode.created_at.desc())  # type: ignore[union-attr]
+        ).all()
+    return episodes + [e for e in archived if e.id not in seen]
+
+
 @app.get("/{token}/", response_class=HTMLResponse)
 async def index(request: Request, token: str):
     _check(token)
     config = load_config()
-    with db.session() as s:
-        episodes = s.exec(
-            select(Episode).order_by(Episode.created_at.desc()).limit(400)  # type: ignore[union-attr]
-        ).all()
+    episodes = _admin_episodes()
     base = _base(request)
     feeds = [
         {"slug": "all", "name": "All feeds (combined)",

@@ -1422,7 +1422,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 )
             show_notes = _interleaved_shownotes(source_label, segments, link)
         else:
-            script = f"{intro}\n\n{scrub_light(body)}\n\n{outro(False)}"
+            # A verbatim course part is the author's own text: scrub_light
+            # would turn "C#" into "C" and "__init__" into "init".
+            spoken = body if course and course.get("verbatim") else scrub_light(body)
+            script = f"{intro}\n\n{spoken}\n\n{outro(False)}"
             show_notes = _shownotes_header(source_label, link) + \
                 "".join(f"<p>{_html_escape(p)}</p>" for p in body.split("\n") if p.strip())
             spoken_blocks = [{"voice": voice, "text": script}]

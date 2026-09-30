@@ -426,3 +426,31 @@ def test_archived_parts_stay_out_of_the_learning_feed():
     config = load_config()
     learning = next(s for s in config.sources if s.slug == "learning")
     assert "ret-feed:1" not in build_feed(config, "https://b", "tok", source=learning)
+
+
+def test_admin_list_always_includes_archived_parts():
+    """Archived parts are by construction the oldest rows, so a newest-N list
+    never reaches them and their restore button is unreachable."""
+    from app.web import _admin_episodes
+
+    old_id, _ = _aged("learning", "fix-archived:1", status="archived", days_old=400)
+    _aged("inbox", "https://fix.example/newer", status="skipped", days_old=0)
+    ids = [e.id for e in _admin_episodes(limit=1)]
+    assert old_id in ids
+    assert len(ids) == len(set(ids))
+
+
+def test_verbatim_script_skips_the_light_scrub(monkeypatch):
+    """scrub_light strips #, _, * and [n]: a programming book read verbatim
+    would say "C" for C# and "init" for __init__."""
+    from app.courses import create_course, parse_course, render_course
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+    code = " In C# you write __init__ and items[0] or a * b."
+    data = _payload("fix-verbatim", n=2, kind="audiobook")
+    data["episodes"][0].update(script=SCRIPT + code, verbatim=True)
+    data["episodes"][1].update(script=SCRIPT + code)  # not verbatim: scrubbed as before
+    _run(render_course(create_course(parse_course(data))))
+    assert code.strip() in calls[0]["text"]
+    assert "C#" not in calls[1]["text"]
