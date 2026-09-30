@@ -1,5 +1,6 @@
 """Audio courses: request parsing, episode creation, rendering, endpoints."""
 import asyncio
+from datetime import timedelta
 
 import pytest
 
@@ -357,3 +358,71 @@ def test_course_status_lists_parts_in_order(api):
     client.post(f"/{token}/api/course", json=_payload("api-status-2", n=1))
     assert len(client.get(f"/{token}/api/course/api-status").json()["parts"]) == 2
     assert client.get(f"/{token}/api/course/nope").status_code == 404
+
+
+def _aged(slug, guid, status="ready", generated_days_ago=None, days_old=90):
+    import json as _json
+
+    from app.config import MEDIA_DIR
+    from app.db import utcnow
+
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"{guid.replace(':', '_').replace('/', '_')}.mp3"
+    (MEDIA_DIR / fname).write_bytes(b"x")
+    prov = {}
+    if generated_days_ago is not None:
+        prov["generated_at"] = (utcnow() - timedelta(days=generated_days_ago)).isoformat()
+    with db.session() as s:
+        ep = Episode(source_slug=slug, guid=guid, title=guid, status=status,
+                     audio_file=fname, audio_bytes=1, audio_seconds=60,
+                     source_text=SCRIPT, provenance=_json.dumps(prov),
+                     created_at=utcnow() - timedelta(days=days_old))
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        return ep.id, MEDIA_DIR / fname
+
+
+def test_retention_archives_learning_and_deletes_the_rest():
+    from app.ingest import cleanup_old_episodes
+
+    course_id, course_mp3 = _aged("learning", "ret-course:1")
+    news_id, news_mp3 = _aged("inbox", "https://ret.example/a")
+    failed_id, _ = _aged("learning", "ret-failed:1", status="error")
+    _run(cleanup_old_episodes(60))
+    with db.session() as s:
+        course = s.get(Episode, course_id)
+        assert s.get(Episode, news_id) is None
+        assert s.get(Episode, failed_id).status == "error"
+    assert course.status == "archived"
+    assert course.audio_file == "" and course.audio_seconds == 0
+    assert course.source_text == SCRIPT
+    assert not course_mp3.exists() and not news_mp3.exists()
+    _run(cleanup_old_episodes(60))  # a second night is a no-op
+    with db.session() as s:
+        assert s.get(Episode, course_id).status == "archived"
+
+
+def test_a_restored_part_gets_a_fresh_retention_window():
+    """Redo keeps created_at, so age must come from when the audio was made."""
+    from app.ingest import cleanup_old_episodes
+
+    ep_id, mp3 = _aged("learning", "ret-restored:1", generated_days_ago=1)
+    _run(cleanup_old_episodes(60))
+    with db.session() as s:
+        assert s.get(Episode, ep_id).status == "ready"
+    assert mp3.exists()
+
+
+def test_archived_parts_stay_out_of_the_learning_feed():
+    from app.config import load_config
+    from app.feedgen import build_feed
+    from app.ingest import cleanup_old_episodes
+
+    ep_id, _ = _aged("learning", "ret-feed:1")
+    _run(cleanup_old_episodes(60))
+    with db.session() as s:  # kept, not deleted: absent from the feed for the right reason
+        assert s.get(Episode, ep_id).status == "archived"
+    config = load_config()
+    learning = next(s for s in config.sources if s.slug == "learning")
+    assert "ret-feed:1" not in build_feed(config, "https://b", "tok", source=learning)

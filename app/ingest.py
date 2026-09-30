@@ -1699,19 +1699,46 @@ async def submit_url(url: str, title: str = "", language: str = "auto",
     return ep_id
 
 
+def _audio_made_at(ep: Episode) -> datetime:
+    """When this episode's current audio was rendered. A redo keeps
+    created_at, so a restored course part would otherwise be archived again
+    the very next night."""
+    try:
+        made = datetime.fromisoformat(json.loads(ep.provenance)["generated_at"])
+    except (ValueError, KeyError, TypeError):
+        made = ep.created_at
+    return made if made.tzinfo else made.replace(tzinfo=UTC)
+
+
 async def cleanup_old_episodes(retention_days: int) -> int:
     cutoff = utcnow() - timedelta(days=retention_days)
-    removed = 0
+    # Course parts keep their text: the script is the personal, expensive
+    # part and redo can re-narrate it. Only the MP3 is worth reclaiming.
+    keep_text = {s.slug for s in load_config().sources if s.type == "learning"}
+    removed = archived = 0
     with db.session() as s:
-        old = s.exec(select(Episode).where(Episode.created_at < cutoff)).all()
+        old = s.exec(select(Episode).where(
+            Episode.created_at < cutoff, Episode.status != "archived",
+        )).all()
         for ep in old:
+            if ep.source_slug in keep_text:
+                if ep.status != "ready" or _audio_made_at(ep) >= cutoff:
+                    continue
+                if ep.audio_file:
+                    (MEDIA_DIR / ep.audio_file).unlink(missing_ok=True)
+                ep.audio_file, ep.audio_bytes, ep.audio_seconds = "", 0, 0
+                ep.status = "archived"
+                s.add(ep)
+                archived += 1
+                continue
             if ep.audio_file:
                 (MEDIA_DIR / ep.audio_file).unlink(missing_ok=True)
             s.delete(ep)
             removed += 1
         s.commit()
-    if removed:
-        log.info("cleanup: removed %d episodes older than %d days", removed, retention_days)
+    if removed or archived:
+        log.info("cleanup: removed %d, archived %d episodes older than %d days",
+                 removed, archived, retention_days)
     return removed
 
 

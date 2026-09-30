@@ -13,6 +13,7 @@
   td, th { padding: .4rem .5rem; border-bottom: 1px solid #8884; text-align: left; vertical-align: top; }
   .status-ready { color: #2e9e44; } .status-error { color: #d33; }
   .status-pending, .status-processing { color: #b8860b; }
+  .status-archived { color: #888; }
   input[type=url], input[type=text] { width: 100%; padding: .5rem; box-sizing: border-box; }
   button { padding: .45rem .9rem; cursor: pointer; }
   form.submit-form { display: grid; gap: .5rem; margin: .5rem 0 1rem; }
@@ -238,6 +239,9 @@
       {% endif %}
       {% if ep.status == 'skipped' and not ep.guid.startswith('digest:') %}
       <form method="post" action="/{{ token }}/api/unskip/{{ ep.id }}" onsubmit="return confirm('Un-skip and generate this episode?')"><button title="un-skip: generate this episode">▶ unskip</button></form>
+      {% endif %}
+      {% if ep.status == 'archived' %}
+      <form method="post" action="/{{ token }}/api/redo/{{ ep.id }}" onsubmit="return confirm('Re-narrate this archived part from its kept script?')"><button title="re-narrate from the kept script">↻ restore</button></form>
       {% endif %}
     </td>
   </tr>
