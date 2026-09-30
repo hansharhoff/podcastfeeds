@@ -13,6 +13,13 @@ from sqlmodel import select
 
 from . import db
 from .config import BASE_URL, MEDIA_DIR, SourceDef, get_token, load_config
+from .courses import (
+    CourseError,
+    course_status,
+    create_course,
+    parse_course,
+    render_course,
+)
 from .covers import cover_path
 from .db import Episode, TickTickItem
 from .feedgen import build_feed
@@ -411,6 +418,32 @@ async def api_submit(token: str, request: Request):
     if "json" in content_type:
         return {"ok": True, "episode_id": ep_id}
     return RedirectResponse(url=f"/{token}/", status_code=303)
+
+
+@app.post("/{token}/api/course")
+async def api_course(token: str, request: Request):
+    """Accept an approved course or audiobook from the audio-course skill."""
+    _check(token)
+    try:
+        data = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="body must be JSON") from None
+    try:
+        req = parse_course(data)
+    except CourseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    ep_ids = create_course(req)
+    spawn(render_course(ep_ids), name=f"course:{req.course_id}")
+    return {"ok": True, "course_id": req.course_id, "episode_ids": ep_ids}
+
+
+@app.get("/{token}/api/course/{course_id}")
+async def api_course_status(token: str, course_id: str):
+    _check(token)
+    parts = course_status(course_id)
+    if not parts:
+        raise HTTPException(status_code=404)
+    return {"course_id": course_id, "parts": parts}
 
 
 @app.post("/{token}/api/poll")

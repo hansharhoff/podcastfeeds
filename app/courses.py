@@ -267,3 +267,21 @@ async def render_course(ep_ids: list[int]) -> None:
     source = learning_source()
     for ep_id in ep_ids:
         await process_episode(ep_id, source)
+
+
+def course_status(course_id: str) -> list[dict]:
+    slug = learning_source().slug
+    with db.session() as s:
+        rows = s.exec(select(Episode).where(
+            Episode.source_slug == slug,
+            Episode.guid.startswith(f"{course_id}:"),  # type: ignore[attr-defined]
+        )).all()
+    parts = []
+    for ep in rows:
+        meta = course_meta(ep.provenance) or {}
+        parts.append({
+            "part": meta.get("part"), "episode_id": ep.id, "title": ep.title,
+            "status": ep.status, "error": ep.error,
+            "audio_seconds": ep.audio_seconds,
+        })
+    return sorted(parts, key=lambda p: p["part"] or 0)

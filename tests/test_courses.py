@@ -304,3 +304,56 @@ def test_redo_keeps_course_meta_and_order(monkeypatch):
     assert ep.title == "Rust ownership (1/1): Part 1 title"
     assert course_meta(ep.provenance)["part"] == 1
     assert calls[-1]["text"].startswith("Rust ownership, part 1 of 1: Part 1 title.")
+
+
+@pytest.fixture
+def api(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import web
+    from app.config import get_token
+
+    spawned = []
+
+    def fake_spawn(coro, name=None):
+        spawned.append(name)
+        coro.close()  # never render in endpoint tests
+
+    monkeypatch.setattr(web, "spawn", fake_spawn)
+    return TestClient(web.app), get_token(), spawned
+
+
+def test_post_course_creates_parts_and_starts_rendering(api):
+    client, token, spawned = api
+    r = client.post(f"/{token}/api/course", json=_payload("api-ok", n=2))
+    assert r.status_code == 200
+    assert len(r.json()["episode_ids"]) == 2
+    assert spawned == ["course:api-ok"]
+
+
+def test_post_course_rejects_with_reason(api):
+    client, token, _ = api
+    r = client.post(f"/{token}/api/course", json=_payload("api-bad", language="fr"))
+    assert r.status_code == 400 and "language" in r.json()["detail"]
+    r = client.post(f"/{token}/api/course", content=b"not json",
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 400
+
+
+def test_post_course_needs_the_token(api):
+    client, _, _ = api
+    assert client.post("/wrong/api/course", json=_payload("api-tok")).status_code == 404
+
+
+def test_course_status_lists_parts_in_order(api):
+    client, token, _ = api
+    client.post(f"/{token}/api/course", json=_payload("api-status", n=2))
+    r = client.get(f"/{token}/api/course/api-status")
+    assert r.status_code == 200
+    parts = r.json()["parts"]
+    assert [p["part"] for p in parts] == [1, 2]
+    assert parts[0]["status"] == "pending"
+    # a prefix of another course's id must not match
+    client.post(f"/{token}/api/course", json=_payload("api-status-2", n=1))
+    assert len(client.get(f"/{token}/api/course/api-status").json()["parts"]) == 2
+    assert client.get(f"/{token}/api/course/nope").status_code == 404
