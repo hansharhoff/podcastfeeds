@@ -307,7 +307,7 @@ def test_redo_keeps_course_meta_and_order(monkeypatch):
     assert ep.status == "ready" and ep.published_at == published
     assert ep.title == "Rust ownership (1/1): Part 1 title"
     assert course_meta(ep.provenance)["part"] == 1
-    assert calls[-1]["text"].startswith("Rust ownership, part 1 of 1: Part 1 title.")
+    assert calls[-1]["text"].startswith("Rust ownership: Part 1 title.")
 
 
 @pytest.fixture
