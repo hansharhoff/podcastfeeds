@@ -445,9 +445,16 @@ async def api_course(token: str, request: Request):
         req = parse_course(data)
     except CourseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    ep_ids = create_course(req)
-    spawn(render_course(ep_ids), name=f"course:{req.course_id}")
-    return {"ok": True, "course_id": req.course_id, "episode_ids": ep_ids}
+    existing = sorted(p["part"] for p in course_status(req.course_id))
+    try:
+        ep_ids = create_course(req)
+    except CourseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    spawn(render_course(ep_ids, req.course_id), name=f"course:{req.course_id}")
+    # existing: parts that were already there and were left untouched, so the
+    # caller knows an edited script for them was NOT applied (use redo).
+    return {"ok": True, "course_id": req.course_id, "episode_ids": ep_ids,
+            "existing": existing}
 
 
 @app.get("/{token}/api/course/{course_id}")

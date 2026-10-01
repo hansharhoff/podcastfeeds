@@ -186,13 +186,13 @@ subscribe to it separately.
   `course_id` only fills in missing parts and retries failed ones.
 - `GET /{token}/api/course/{course_id}` reports each part's status.
 - Parts render one at a time in order and keep their feed order across redos.
-- After `retention_days` the MP3 is deleted but the part is kept as
+- After `retention_days` (a year by default) the MP3 is deleted but the part is kept as
   `archived` with its script; **↻ restore** on the admin page re-narrates it.
 - Skill setup: export `PODCASTFEEDS_URL` (e.g. `http://localhost:8080`) and
   either `PODCASTFEEDS_TOKEN` or `PODCASTFEEDS_TOKEN_FILE` (path to
   `data/token.txt`).
 - Overriding the source in `sources.yaml` (e.g. a fixed teacher `voice`) needs
-  `type: learning` and `in_all_feed: false`.
+  `type: learning`; it stays out of `all.xml` unless it sets `in_all_feed: true`.
 
 ## Reboot resilience
 
@@ -207,7 +207,7 @@ subscribe to it separately.
 
 ## Operational notes
 
-- Episodes older than `retention_days` (default 60) are deleted nightly.
+- Episodes older than `retention_days` (default 365) are deleted nightly.
 - WSL2/Docker must be running for the feed to be reachable — enable Docker
   Desktop autostart, or move the stack to the Synology (same compose file;
   change `BASE_URL`, run `tailscale serve` there).

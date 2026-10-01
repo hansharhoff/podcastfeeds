@@ -9,6 +9,7 @@ part 3 of 5.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -135,6 +136,14 @@ def create_course(req: CourseRequest) -> list[int]:
     slug = learning_source().slug
     base = utcnow()
     ids: list[int] = []
+    known = {p["part"]: p for p in course_status(req.course_id)}
+    if known:
+        had = next(iter(known.values()))
+        meta = course_meta(_get(had["episode_id"]).provenance) or {}
+        if meta.get("parts") not in (None, len(req.parts)):
+            raise CourseError(
+                f"course {req.course_id} already has {meta['parts']} parts; "
+                "a different shape needs a new course_id")
     with db.session() as s:
         for p in req.parts:
             guid = f"{req.course_id}:{p.part}"
@@ -164,6 +173,11 @@ def create_course(req: CourseRequest) -> list[int]:
             s.refresh(ep)
             ids.append(ep.id)
     return ids
+
+
+def _get(ep_id: int) -> Episode:
+    with db.session() as s:
+        return s.get(Episode, ep_id)
 
 
 def _find(s, slug: str, guid: str) -> Episode | None:
@@ -210,12 +224,13 @@ def _esc(text: str) -> str:
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)^```[ \t]*$", re.S | re.M)
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 # Runs on already-escaped text, so a '"' in the URL is &quot; by now.
-_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)`]+)\)")
 
 
 def _inline(text: str) -> str:
-    text = _INLINE_CODE_RE.sub(r"<code>\1</code>", _esc(text))
-    return _LINK_RE.sub(r'<a href="\2">\1</a>', text)
+    # Links before inline code, so a backtick can never end up inside an href.
+    text = _LINK_RE.sub(r'<a href="\2">\1</a>', _esc(text))
+    return _INLINE_CODE_RE.sub(r"<code>\1</code>", text)
 
 
 def _blocks(text: str) -> list[str]:
@@ -227,7 +242,7 @@ def _blocks(text: str) -> list[str]:
         if all(ln.startswith(("- ", "* ")) for ln in lines):
             items = "".join(f"<li>{_inline(ln[2:])}</li>" for ln in lines)
             out.append(f"<ul>{items}</ul>")
-        elif lines[0].startswith("#"):
+        elif re.match(r"#{1,6} ", lines[0]):  # "#include" is code, not a heading
             out.append(f"<h3>{_inline(lines[0].lstrip('#').strip())}</h3>")
             if lines[1:]:
                 out.append(f"<p>{_inline(' '.join(lines[1:]))}</p>")
@@ -258,18 +273,27 @@ def course_show_notes(meta: dict) -> str:
     return head + ("\n" + notes if notes else "")
 
 
-async def render_course(ep_ids: list[int]) -> None:
+# One lock per course: a client retry POSTs the same course twice, and the
+# second render must queue behind the first rather than start part 2 while
+# part 1 is still processing. Never pruned; one tiny lock per course ever made.
+_course_locks: dict[str, asyncio.Lock] = {}
+
+
+async def render_course(ep_ids: list[int], course_id: str) -> None:
     """Render parts one at a time, in part order. process_episode records its
     own failures (status error, retry button), so one bad chapter never stops
     the parts after it. Parts already ready are a no-op."""
-    from .ingest import process_episode  # ingest imports this module
+    from . import ingest  # ingest imports this module
 
     source = learning_source()
-    for ep_id in ep_ids:
-        await process_episode(ep_id, source)
+    async with _course_locks.setdefault(course_id, asyncio.Lock()):
+        for ep_id in ep_ids:
+            await ingest.process_episode(ep_id, source)
 
 
 def course_status(course_id: str) -> list[dict]:
+    if not _COURSE_ID_RE.match(course_id):
+        return []  # also keeps '%' and '_' from acting as LIKE wildcards below
     slug = learning_source().slug
     with db.session() as s:
         rows = s.exec(select(Episode).where(

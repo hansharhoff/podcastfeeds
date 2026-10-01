@@ -1439,6 +1439,10 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
 
         if course and not link:
             show_notes = course_show_notes(course)
+        elif course and course.get("show_notes_md"):
+            # The outro promised code and links in the show notes. Put them
+            # first, so the length cap can only ever trim the article below.
+            show_notes = course_show_notes(course) + "\n" + show_notes
         if is_preview:
             prov["preview"] = True
             if fetch_issue:
@@ -1742,7 +1746,7 @@ async def cleanup_old_episodes(retention_days: int) -> int:
     if removed or archived:
         log.info("cleanup: removed %d, archived %d episodes older than %d days",
                  removed, archived, retention_days)
-    return removed
+    return removed + archived
 
 
 async def cleanup_orphaned_media(min_age_seconds: int = 3600) -> int:

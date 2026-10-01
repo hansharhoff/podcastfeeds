@@ -85,8 +85,11 @@ def test_create_course_makes_ordered_rows_with_course_meta():
 def test_create_course_is_idempotent_and_fills_gaps():
     from app.courses import create_course, parse_course
 
-    first = create_course(parse_course(_payload("create-gaps", n=1)))
-    # Resubmitting with changed text for part 1 leaves part 1 alone; part 2 is new.
+    first = create_course(parse_course(_payload("create-gaps", n=2)))
+    with db.session() as s:  # a part that went missing
+        s.delete(s.get(Episode, first[1]))
+        s.commit()
+    # Resubmitting with changed text for part 1 leaves part 1 alone; part 2 is back.
     data = _payload("create-gaps", n=2)
     data["episodes"][0]["script"] = SCRIPT + " Changed."
     second = create_course(parse_course(data))
@@ -189,7 +192,7 @@ def test_script_part_is_narrated_verbatim_with_course_framing(monkeypatch):
     ids = create_course(parse_course(data))
     with db.session() as s:
         before = s.get(Episode, ids[0]).published_at
-    _run(render_course(ids))
+    _run(render_course(ids, "t"))
 
     with db.session() as s:
         ep = s.get(Episode, ids[0])
@@ -227,7 +230,7 @@ def test_url_part_uses_article_pipeline_with_course_framing(monkeypatch):
     data["episodes"][0] = {"part": 1, "title": "Principles of Shaping",
                            "url": "https://book.example/shape-up/1"}
     ids = create_course(parse_course(data))
-    _run(render_course(ids))
+    _run(render_course(ids, "t"))
 
     with db.session() as s:
         ep = s.get(Episode, ids[0])
@@ -252,7 +255,7 @@ def test_failed_part_does_not_block_later_parts(monkeypatch):
     data["episodes"][0] = {"part": 1, "title": "Gone",
                            "url": "https://book.example/gone"}
     ids = create_course(parse_course(data))
-    _run(render_course(ids))
+    _run(render_course(ids, "t"))
     with db.session() as s:
         assert s.get(Episode, ids[0]).status == "error"
         assert s.get(Episode, ids[1]).status == "ready"
@@ -272,7 +275,7 @@ def test_skip_path_keeps_course_meta(monkeypatch):
     data["episodes"][0] = {"part": 1, "title": "Empty",
                            "url": "https://book.example/empty"}
     ids = create_course(parse_course(data))
-    _run(render_course(ids))
+    _run(render_course(ids, "t"))
     with db.session() as s:
         ep = s.get(Episode, ids[0])
     assert ep.status == "skipped"
@@ -292,7 +295,7 @@ def test_redo_keeps_course_meta_and_order(monkeypatch):
     calls = []
     _fake_tts(monkeypatch, calls)
     ids = create_course(parse_course(_payload("render-redo", n=1)))
-    _run(render_course(ids))
+    _run(render_course(ids, "t"))
     with db.session() as s:
         first = s.get(Episode, ids[0])
         published, first.status = first.published_at, "pending"
@@ -451,6 +454,112 @@ def test_verbatim_script_skips_the_light_scrub(monkeypatch):
     data = _payload("fix-verbatim", n=2, kind="audiobook")
     data["episodes"][0].update(script=SCRIPT + code, verbatim=True)
     data["episodes"][1].update(script=SCRIPT + code)  # not verbatim: scrubbed as before
-    _run(render_course(create_course(parse_course(data))))
+    _run(render_course(create_course(parse_course(data)), "t"))
     assert code.strip() in calls[0]["text"]
     assert "C#" not in calls[1]["text"]
+
+
+# ── Minor fixes from the final review ──────────────────────────────────────
+
+def test_url_part_show_notes_include_the_course_notes(monkeypatch):
+    """The outro promises code and links in the show notes; a URL part's notes
+    are the article's, so the course notes must be appended there too."""
+    from app import ingest
+    from app.courses import create_course, parse_course, render_course
+
+    calls = []
+    _fake_tts(monkeypatch, calls)
+
+    async def page(url):
+        return ("<html><body><article>" + "".join(
+            f"<p>Paragraph {i}: shaping sets boundaries on project {i} before "
+            "anyone commits to building it.</p>" for i in range(12))
+            + "</article></body></html>")
+
+    monkeypatch.setattr(ingest, "fetch_html", page)
+    data = _payload("minor-notes", n=1, kind="audiobook")
+    data["episodes"][0] = {"part": 1, "title": "Ch", "url": "https://book.example/n",
+                           "show_notes_md": "See `cargo doc`."}
+    ids = create_course(parse_course(data))
+    _run(render_course(ids, "minor-notes"))
+    with db.session() as s:
+        ep = s.get(Episode, ids[0])
+    assert ep.status == "ready", ep.error
+    assert "<code>cargo doc</code>" in ep.description
+
+
+def test_one_course_never_renders_two_parts_at_once(monkeypatch):
+    """A client retry POSTs the same course twice; the two renders must queue
+    behind each other, not run parts side by side."""
+    from app import ingest
+    from app.courses import render_course
+
+    active = peak = 0
+
+    async def fake_process(ep_id, source):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    monkeypatch.setattr(ingest, "process_episode", fake_process)
+
+    async def both():
+        await asyncio.gather(render_course([1, 2], "minor-lock"),
+                             render_course([1, 2], "minor-lock"))
+
+    _run(both())
+    assert peak == 1
+
+
+def test_course_status_does_not_treat_the_id_as_a_pattern(api):
+    client, token, _ = api
+    client.post(f"/{token}/api/course", json=_payload("esc-a", n=1))
+    assert client.get(f"/{token}/api/course/esc%25").status_code == 404
+    assert client.get(f"/{token}/api/course/esc_a").status_code == 404
+
+
+def test_repost_reports_existing_parts_and_rejects_a_new_shape(api):
+    client, token, _ = api
+    client.post(f"/{token}/api/course", json=_payload("minor-repost", n=2))
+    r = client.post(f"/{token}/api/course", json=_payload("minor-repost", n=2))
+    assert r.status_code == 200 and r.json()["existing"] == [1, 2]
+    r = client.post(f"/{token}/api/course", json=_payload("minor-repost", n=3))
+    assert r.status_code == 400 and "already has 2 parts" in r.json()["detail"]
+
+
+def test_markdown_heading_needs_a_space_and_links_skip_code():
+    from app.courses import markdown_to_html
+
+    assert "<h3>" not in markdown_to_html("#include <stdio.h>")
+    html = markdown_to_html("[x](https://a.test/`b`)")
+    assert 'href="https://a.test/<code>' not in html
+
+
+def test_a_learning_override_stays_out_of_all_unless_asked(monkeypatch, tmp_path):
+    from app import config
+
+    (tmp_path / "sources.yaml").write_text(
+        "sources:\n"
+        "  - {slug: learning, name: Learning, type: learning, voice: en-GB-RyanNeural}\n"
+        "  - {slug: learning2, name: L2, type: learning, in_all_feed: true}\n")
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    by_slug = {s.slug: s for s in config.load_config().sources}
+    assert by_slug["learning"].in_all_feed is False
+    assert by_slug["learning2"].in_all_feed is True
+
+
+def test_cleanup_counts_archived_parts_too():
+    from app.ingest import cleanup_old_episodes
+
+    _aged("learning", "minor-count:1", days_old=400)
+    assert _run(cleanup_old_episodes(365)) >= 1
+
+
+def test_episodes_are_kept_for_a_year_by_default(monkeypatch, tmp_path):
+    from app import config
+
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)  # no sources.yaml at all
+    assert config.load_config().retention_days == 365
+    assert config.AppConfig().retention_days == 365

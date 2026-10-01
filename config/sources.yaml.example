@@ -54,7 +54,7 @@ meta:
     "marc andreessen": pmarca
 
 defaults:
-  retention_days: 60
+  retention_days: 365
   poll_minutes: 30
   max_items_per_poll: 3
 

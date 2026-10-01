@@ -83,7 +83,7 @@ class SourceDef:
 @dataclass
 class AppConfig:
     author: str = "podcastfeeds"
-    retention_days: int = 60
+    retention_days: int = 365
     sources: list[SourceDef] = field(default_factory=list)
     # Maps a speaker name as it appears in screenshots (lowercase) to a roster
     # key, so e.g. a tweet by the blog's author is read in the blog's voice.
@@ -105,6 +105,8 @@ def load_config() -> AppConfig:
     sources: list[SourceDef] = []
     for item in raw.get("sources", []) or []:
         merged = {**defaults, **item}
+        if item.get("type") == "learning" and "in_all_feed" not in item:
+            merged["in_all_feed"] = False  # courses never leak into all.xml by accident
         merged = {k: v for k, v in merged.items() if k in known}
         sources.append(SourceDef(**merged))
 
@@ -136,7 +138,7 @@ def load_config() -> AppConfig:
 
     return AppConfig(
         author=meta.get("author", "podcastfeeds"),
-        retention_days=int(defaults.get("retention_days", 60)),
+        retention_days=int(defaults.get("retention_days", 365)),
         sources=[s for s in sources if s.enabled],
         speaker_aliases={
             str(k).lower(): str(v)
