@@ -191,6 +191,8 @@ def course_intro(meta: dict) -> str:
     da = meta["language"] == "da"
     if meta["kind"] == "audiobook":
         return f"{title}, {'kapitel' if da else 'chapter'} {part}: {pt}."
+    if parts == 1:  # "part 1 of 1" sounds wrong on a single episode
+        return f"{title}: {pt}."
     return (f"{title}, del {part} af {parts}: {pt}." if da
             else f"{title}, part {part} of {parts}: {pt}.")
 
@@ -204,6 +206,8 @@ def course_outro(meta: dict) -> str:
             text = f"Slut på {title}." if last else f"Slut på kapitel {part}."
         else:
             text = f"The end of {title}." if last else f"End of chapter {part}."
+    elif parts == 1:
+        text = f"Det var {title}." if da else f"That's the end of {title}."
     elif da:
         text = (f"Det var sidste del af {title}." if last
                 else f"Det var del {part} af {parts}. Næste gang: del {part + 1}.")
@@ -211,8 +215,8 @@ def course_outro(meta: dict) -> str:
         text = (f"That was the final part of {title}." if last
                 else f"That was part {part} of {parts}. Next up: part {part + 1}.")
     if meta.get("show_notes_md"):
-        text += (" Kode og links findes i shownotes." if da
-                 else " Code and links are in the show notes.")
+        # Not "code and links": many courses have no code at all.
+        text += " Der er mere i shownotes." if da else " There's more in the show notes."
     return text
 
 

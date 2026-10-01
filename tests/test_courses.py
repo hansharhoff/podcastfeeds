@@ -132,7 +132,7 @@ def test_course_outro_points_ahead_and_at_notes():
     assert course_outro(_meta()) == "That was part 2 of 4. Next up: part 3."
     assert course_outro(_meta(part=4)) == "That was the final part of Shape Up."
     assert course_outro(_meta(show_notes_md="`x`")).endswith(
-        "Code and links are in the show notes.")
+        "There's more in the show notes.")
     assert course_outro(_meta(language="da", part=4)) == "Det var sidste del af Shape Up."
     assert course_outro(_meta(kind="audiobook")) == "End of chapter 2."
     assert course_outro(_meta(kind="audiobook", part=4)) == "The end of Shape Up."
@@ -204,7 +204,7 @@ def test_script_part_is_narrated_verbatim_with_course_framing(monkeypatch):
     text = calls[0]["text"]
     assert text.startswith("Rust ownership, part 1 of 2: Part 1 title.")
     assert "A Vec<T> owns its buffer, and R&D says a < b." in text
-    assert text.rstrip().endswith("Code and links are in the show notes.")
+    assert text.rstrip().endswith("There's more in the show notes.")
     # render order is part order; the ID3 title is the full episode title
     assert [c["title"] for c in calls] == ["Rust ownership (1/2): Part 1 title",
                                            "Rust ownership (2/2): Part 2 title"]
@@ -563,3 +563,17 @@ def test_episodes_are_kept_for_a_year_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)  # no sources.yaml at all
     assert config.load_config().retention_days == 365
     assert config.AppConfig().retention_days == 365
+
+
+def test_a_one_part_course_does_not_say_part_1_of_1():
+    """"Part 1 of 1" and "the final part" sound wrong on a single episode."""
+    from app.courses import course_intro, course_outro
+
+    one = _meta(part=1, parts=1)
+    assert course_intro(one) == "Shape Up: Borrowing."
+    assert course_outro(one) == "That's the end of Shape Up."
+    da = _meta(part=1, parts=1, language="da")
+    assert course_intro(da) == "Shape Up: Borrowing."
+    assert course_outro(da) == "Det var Shape Up."
+    assert course_outro(_meta(part=1, parts=1, show_notes_md="x")) == \
+        "That's the end of Shape Up. There's more in the show notes."
