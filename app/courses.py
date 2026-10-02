@@ -190,7 +190,9 @@ def course_intro(meta: dict) -> str:
                               meta["parts"], meta["part_title"])
     da = meta["language"] == "da"
     if meta["kind"] == "audiobook":
-        return f"{title}, {'kapitel' if da else 'chapter'} {part}: {pt}."
+        # The chapter title carries the book's own numbering ("Chapter 1:
+        # Introduction"); the part number does not once a foreword is sent.
+        return f"{title}: {pt}."
     if parts == 1:  # "part 1 of 1" sounds wrong on a single episode
         return f"{title}: {pt}."
     return (f"{title}, del {part} af {parts}: {pt}." if da
@@ -198,14 +200,14 @@ def course_intro(meta: dict) -> str:
 
 
 def course_outro(meta: dict) -> str:
-    title, part, parts = meta["course_title"], meta["part"], meta["parts"]
+    title, part, parts, pt = (meta["course_title"], meta["part"],
+                              meta["parts"], meta["part_title"])
     last = part >= parts
     da = meta["language"] == "da"
     if meta["kind"] == "audiobook":
-        if da:
-            text = f"Slut på {title}." if last else f"Slut på kapitel {part}."
-        else:
-            text = f"The end of {title}." if last else f"End of chapter {part}."
+        # Never "the end of the book": the last part sent is often just the
+        # last chapter sent so far.
+        text = f"Slut på {pt}." if da else f"End of {pt}."
     elif parts == 1:
         text = f"Det var {title}." if da else f"That's the end of {title}."
     elif da:

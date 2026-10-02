@@ -117,8 +117,8 @@ def _meta(**over):
 @pytest.mark.parametrize("over, expected", [
     ({}, "Shape Up, part 2 of 4: Borrowing."),
     ({"language": "da"}, "Shape Up, del 2 af 4: Borrowing."),
-    ({"kind": "audiobook"}, "Shape Up, chapter 2: Borrowing."),
-    ({"kind": "audiobook", "language": "da"}, "Shape Up, kapitel 2: Borrowing."),
+    ({"kind": "audiobook"}, "Shape Up: Borrowing."),
+    ({"kind": "audiobook", "language": "da"}, "Shape Up: Borrowing."),
 ])
 def test_course_intro(over, expected):
     from app.courses import course_intro
@@ -134,8 +134,7 @@ def test_course_outro_points_ahead_and_at_notes():
     assert course_outro(_meta(show_notes_md="`x`")).endswith(
         "There's more in the show notes.")
     assert course_outro(_meta(language="da", part=4)) == "Det var sidste del af Shape Up."
-    assert course_outro(_meta(kind="audiobook")) == "End of chapter 2."
-    assert course_outro(_meta(kind="audiobook", part=4)) == "The end of Shape Up."
+    assert course_outro(_meta(kind="audiobook")) == "End of Borrowing."
 
 
 def test_markdown_escapes_markup_and_only_links_http():
@@ -236,8 +235,8 @@ def test_url_part_uses_article_pipeline_with_course_framing(monkeypatch):
         ep = s.get(Episode, ids[0])
     assert ep.status == "ready", ep.error
     assert ep.title == "Shape Up (1/1): Principles of Shaping"
-    assert calls[0]["text"].startswith("Shape Up, chapter 1: Principles of Shaping.")
-    assert calls[0]["text"].rstrip().endswith("The end of Shape Up.")
+    assert calls[0]["text"].startswith("Shape Up: Principles of Shaping.")
+    assert calls[0]["text"].rstrip().endswith("End of Principles of Shaping.")
 
 
 def test_failed_part_does_not_block_later_parts(monkeypatch):
@@ -577,3 +576,19 @@ def test_a_one_part_course_does_not_say_part_1_of_1():
     assert course_outro(da) == "Det var Shape Up."
     assert course_outro(_meta(part=1, parts=1, show_notes_md="x")) == \
         "That's the end of Shape Up. There's more in the show notes."
+
+
+def test_audiobook_framing_follows_the_book_not_the_part_number():
+    """With a foreword sent as part 1, "chapter 2: Introduction" contradicted
+    the book, and the last part sent claimed "The end of Shape Up" two
+    chapters in. The chapter title carries the book's own numbering."""
+    from app.courses import course_intro, course_outro
+
+    intro_ch = _meta(kind="audiobook", part=2, parts=3,
+                     part_title="Chapter 1: Introduction")
+    assert course_intro(intro_ch) == "Shape Up: Chapter 1: Introduction."
+    last = _meta(kind="audiobook", part=3, parts=3,
+                 part_title="Chapter 2: Principles of Shaping")
+    assert course_outro(last) == "End of Chapter 2: Principles of Shaping."
+    assert course_outro({**last, "language": "da"}) == \
+        "Slut på Chapter 2: Principles of Shaping."
