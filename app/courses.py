@@ -114,7 +114,18 @@ def learning_source() -> SourceDef:
 
 
 def episode_title(meta: dict) -> str:
-    return f"{meta['course_title']} ({meta['part']}/{meta['parts']}): {meta['part_title']}"
+    # Only a multi-part course counts in the title. "Shape Up (3/3)" read as
+    # the end of the book two chapters in, and "(1/1)" is noise; the show
+    # notes header carries the count instead (_part_line).
+    if meta["kind"] == "course" and meta["parts"] > 1:
+        return f"{meta['course_title']} ({meta['part']}/{meta['parts']}): {meta['part_title']}"
+    return f"{meta['course_title']}: {meta['part_title']}"
+
+
+def _part_line(meta: dict) -> str:
+    if meta["kind"] == "audiobook":
+        return f"Part {meta['part']} of the {meta['parts']} chapters sent so far"
+    return f"Part {meta['part']} of {meta['parts']}"
 
 
 def course_meta(provenance: str) -> dict | None:
@@ -274,7 +285,7 @@ def markdown_to_html(md: str) -> str:
 
 def course_show_notes(meta: dict) -> str:
     head = (f"<p><strong>{_esc(meta['course_title'])}</strong>: "
-            f"{_esc(meta['part_title'])}</p>")
+            f"{_esc(meta['part_title'])}<br/><small>{_esc(_part_line(meta))}</small></p>")
     notes = markdown_to_html(meta.get("show_notes_md") or "")
     return head + ("\n" + notes if notes else "")
 

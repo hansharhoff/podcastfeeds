@@ -1438,10 +1438,13 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 )
 
         if course and not link:
-            show_notes = course_show_notes(course)
-        elif course and course.get("show_notes_md"):
-            # The outro promised code and links in the show notes. Put them
-            # first, so the length cap can only ever trim the article below.
+            # Notes, then the full transcript: the listener can read along or
+            # look something up later. A script part has no images to add.
+            show_notes = course_show_notes(course) + "\n<h3>Transcript</h3>\n" + "".join(
+                f"<p>{_html_escape(p)}</p>" for p in body.split("\n") if p.strip())
+        elif course:
+            # Course header and notes first, so the length cap can only ever
+            # trim the chapter's text and images below them.
             show_notes = course_show_notes(course) + "\n" + show_notes
         if is_preview:
             prov["preview"] = True

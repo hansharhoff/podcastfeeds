@@ -160,7 +160,7 @@ def test_course_show_notes_has_a_header_and_the_notes():
     from app.courses import course_show_notes
 
     html = course_show_notes(_meta(show_notes_md="See `cargo build`."))
-    assert html.startswith("<p><strong>Shape Up</strong>: Borrowing</p>")
+    assert html.startswith("<p><strong>Shape Up</strong>: Borrowing<br/><small>Part 2 of 4</small></p>")
     assert "<code>cargo build</code>" in html
 
 
@@ -234,7 +234,7 @@ def test_url_part_uses_article_pipeline_with_course_framing(monkeypatch):
     with db.session() as s:
         ep = s.get(Episode, ids[0])
     assert ep.status == "ready", ep.error
-    assert ep.title == "Shape Up (1/1): Principles of Shaping"
+    assert ep.title == "Shape Up: Principles of Shaping"
     assert calls[0]["text"].startswith("Shape Up: Principles of Shaping.")
     assert calls[0]["text"].rstrip().endswith("End of Principles of Shaping.")
 
@@ -304,7 +304,7 @@ def test_redo_keeps_course_meta_and_order(monkeypatch):
     with db.session() as s:
         ep = s.get(Episode, ids[0])
     assert ep.status == "ready" and ep.published_at == published
-    assert ep.title == "Rust ownership (1/1): Part 1 title"
+    assert ep.title == "Rust ownership: Part 1 title"
     assert course_meta(ep.provenance)["part"] == 1
     assert calls[-1]["text"].startswith("Rust ownership: Part 1 title.")
 
@@ -592,3 +592,63 @@ def test_audiobook_framing_follows_the_book_not_the_part_number():
     assert course_outro(last) == "End of Chapter 2: Principles of Shaping."
     assert course_outro({**last, "language": "da"}) == \
         "Slut på Chapter 2: Principles of Shaping."
+
+
+@pytest.mark.parametrize("over, expected", [
+    ({}, "Shape Up (2/4): Borrowing"),
+    ({"part": 1, "parts": 1}, "Shape Up: Borrowing"),
+    ({"kind": "audiobook", "part": 3, "parts": 3}, "Shape Up: Borrowing"),
+])
+def test_titles_only_count_parts_of_a_multi_part_course(over, expected):
+    """"Shape Up (3/3)" read as the end of the book two chapters in, and
+    "(1/1)" is noise; the count moves to the show notes instead."""
+    from app.courses import episode_title
+
+    assert episode_title(_meta(**over)) == expected
+
+
+def test_show_notes_header_keeps_the_part_count():
+    from app.courses import course_show_notes
+
+    book = course_show_notes(_meta(kind="audiobook", part=3, parts=3))
+    assert "<small>Part 3 of the 3 chapters sent so far</small>" in book
+    one = course_show_notes(_meta(part=1, parts=1))
+    assert "<small>Part 1 of 1</small>" in one
+
+
+def test_script_part_show_notes_carry_the_transcript(monkeypatch):
+    from app.courses import create_course, parse_course, render_course
+
+    _fake_tts(monkeypatch, [])
+    data = _payload("notes-transcript", n=1)
+    data["episodes"][0]["script"] = SCRIPT + "\n\nA second paragraph about Vec<T>."
+    ids = create_course(parse_course(data))
+    _run(render_course(ids, "notes-transcript"))
+    with db.session() as s:
+        desc = s.get(Episode, ids[0]).description
+    assert "<h3>Transcript</h3>" in desc
+    assert "<p>A second paragraph about Vec&lt;T&gt;.</p>" in desc
+
+
+def test_url_part_show_notes_have_the_course_header_and_the_article(monkeypatch):
+    from app import ingest
+    from app.courses import create_course, parse_course, render_course
+
+    _fake_tts(monkeypatch, [])
+
+    async def page(url):
+        return ("<html><body><article>" + "".join(
+            f"<p>Paragraph {i}: shaping sets boundaries on project {i} before "
+            "anyone commits to building it.</p>" for i in range(12))
+            + "</article></body></html>")
+
+    monkeypatch.setattr(ingest, "fetch_html", page)
+    data = _payload("notes-url", n=1, kind="audiobook", title="Shape Up")
+    data["episodes"][0] = {"part": 1, "title": "Chapter 1: Intro",
+                           "url": "https://book.example/notes"}
+    ids = create_course(parse_course(data))
+    _run(render_course(ids, "notes-url"))
+    with db.session() as s:
+        desc = s.get(Episode, ids[0]).description
+    assert desc.startswith("<p><strong>Shape Up</strong>: Chapter 1: Intro<br/>")
+    assert "Paragraph 11: shaping sets boundaries" in desc
