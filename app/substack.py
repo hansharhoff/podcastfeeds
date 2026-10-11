@@ -78,7 +78,7 @@ async def _api_json(url: str, cookie_url: str | None = None) -> dict | None:
 
 
 async def fetch_post(sub: str, slug: str) -> dict | None:
-    """Return {title, body_html, cover_image, audience, accessible, ...} or None."""
+    """Return {title, body_html, cover_image, audience, accessible, bylines, ...} or None."""
     data = await _api_json(f"https://{sub}.substack.com/api/v1/posts/{slug}")
     if data is None:
         return None
@@ -100,12 +100,28 @@ async def fetch_post(sub: str, slug: str) -> dict | None:
         f"https://substack.com/api/v1/posts/by-id/{data['id']}")
     if alt and isinstance(alt.get("post"), dict):
         alt_post = post_from_api(alt["post"])
+        alt_post["bylines"] = alt_post["bylines"] or post["bylines"]
         if alt_post["delivered_words"] > post["delivered_words"]:
             log.info("substack by-id host delivered the fuller paid body "
                      "for %s/%s (%d vs %d words)", sub, slug,
                      alt_post["delivered_words"], post["delivered_words"])
             return alt_post
     return post
+
+
+def _bylines(data: dict) -> list[str]:
+    """Author names for a post, in the order Substack lists them.
+
+    A publication's posts are not all by its owner: most Slow Boring posts in
+    October 2026 carry Halina Bennet's byline, and Noahpinion runs guest posts.
+    """
+    raw = data.get("publishedBylines")
+    names: list[str] = []
+    for entry in raw if isinstance(raw, list) else []:
+        name = (entry.get("name") or "").strip() if isinstance(entry, dict) else ""
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def post_from_api(data: dict) -> dict:
@@ -139,4 +155,5 @@ def post_from_api(data: dict) -> dict:
         "accessible": accessible,
         "wordcount": wordcount,
         "delivered_words": delivered,
+        "bylines": _bylines(data),
     }

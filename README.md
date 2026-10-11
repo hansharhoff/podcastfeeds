@@ -136,6 +136,7 @@ This replaced hnrss.org, which answers roughly half of all polls with a 502.
   pixel area (re-fetched at cover resolution). Embedded in the MP3 and per-item
   `itunes:image`; the generated gradient cover is the last-resort fallback.
 - **Intros/outros** — every article episode opens "Title. From Source, date."
+  (Substack posts name their own byline: "Title. By Author, from Source, date.")
   and signs off pointing at the show notes; episodes carry embedded cover art
   and `itunes:episode` numbers.
 - **Digests** — LLM-rephrased (overview first, then perspective and

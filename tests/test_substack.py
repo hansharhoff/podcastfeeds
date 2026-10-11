@@ -204,3 +204,39 @@ def test_substack_ref_from_url_ignores_non_posts_and_other_hosts():
     assert substack_ref_from_url("https://www.slowboring.com/p/essay") is None
     assert substack_ref_from_url("https://substack.com/p/essay") is None
     assert substack_ref_from_url("not a url") is None
+
+
+# ── bylines: a publication's posts are not all by its owner (Slow Boring is
+#    often Halina Bennet, not Matthew Yglesias) ──────────────────────────────
+
+def test_bylines_come_from_published_bylines():
+    post = post_from_api({"title": "t", "body_html": _html(50),
+                          "publishedBylines": [{"name": "Halina Bennet"}]})
+    assert post["bylines"] == ["Halina Bennet"]
+
+
+def test_bylines_keep_order_and_drop_blanks_and_duplicates():
+    post = post_from_api({"title": "t", "body_html": _html(50),
+                          "publishedBylines": [{"name": " Ramez Naam "}, {"name": ""},
+                                               {}, {"name": "Noah Smith"},
+                                               {"name": "Ramez Naam"}]})
+    assert post["bylines"] == ["Ramez Naam", "Noah Smith"]
+
+
+def test_bylines_missing_or_malformed_is_empty():
+    assert post_from_api({"title": "t", "body_html": _html(50)})["bylines"] == []
+    assert post_from_api({"title": "t", "body_html": _html(50),
+                          "publishedBylines": "nope"})["bylines"] == []
+
+
+def test_fetch_post_keeps_the_byline_when_the_fuller_body_has_none(monkeypatch):
+    from app import substack
+    monkeypatch.setattr(substack, "_api_json", _fake_api(
+        {"title": "t", "body_html": _html(1261), "audience": "only_paid",
+         "wordcount": 3878, "id": 99,
+         "publishedBylines": [{"name": "Halina Bennet"}]},
+        {"post": {"title": "t", "body_html": _html(3900),
+                  "audience": "only_paid", "wordcount": 3878, "id": 99}}))
+    post = _run(substack.fetch_post("slowboring", "some-post"))
+    assert post["delivered_words"] == 3900
+    assert post["bylines"] == ["Halina Bennet"]

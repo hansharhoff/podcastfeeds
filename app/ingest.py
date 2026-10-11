@@ -702,21 +702,35 @@ def _safe_truncate_html(html_: str, limit: int) -> str:
     return cut.rstrip() + "\n<p>…</p>"
 
 
+def _spoken_byline(bylines: list[str] | None, source_name: str, language: str) -> str:
+    """The post's authors as one spoken phrase, or "" when there is nothing
+    worth saying: no byline, or one that only repeats the source's name."""
+    names = [n for n in bylines or [] if n.casefold() != source_name.casefold()]
+    if not names:
+        return ""
+    joiner = " og " if language == "da" else " and "
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + joiner + names[-1]
+
+
 def _episode_intro(title: str, source_name: str, language: str,
-                   preview: bool = False, fetch_issue: bool = False) -> str:
+                   preview: bool = False, fetch_issue: bool = False,
+                   bylines: list[str] | None = None) -> str:
     # fetch_issue: a subscriber cookie was configured but the full body still
     # didn't come back (expired session, etc.) — say "problem", not "paywall",
     # so Hans hears that something needs fixing (ep. 243 feedback).
     date_str = spoken_date(utcnow(), language)
+    by = _spoken_byline(bylines, source_name, language)
     if language == "da":
-        base = f"{title}. Fra {source_name}, {date_str}."
+        base = (f"{title}. Af {by}, fra {source_name}, {date_str}." if by
+                else f"{title}. Fra {source_name}, {date_str}.")
         if preview and fetch_issue:
             base += (" Bemærk: der var et problem med at hente den fulde version"
                      " af dette betalte indlæg — dette er kun det gratis uddrag.")
         elif preview:
             base += " Bemærk: dette er kun et gratis uddrag af et betalt indlæg."
         return base
-    base = f"{title}. From {source_name}, {date_str}."
+    base = (f"{title}. By {by}, from {source_name}, {date_str}." if by
+            else f"{title}. From {source_name}, {date_str}.")
     if preview and fetch_issue:
         base += (" Note: there was a problem getting the full version of this"
                  " paid post — this is only the free excerpt.")
@@ -968,6 +982,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         html_text = ""
         paywalled = False
         fetch_issue = False
+        bylines: list[str] = []  # the post's own authors, when the source says
         dr_liveblog = False
         followed_link = ""  # set below if a social post's outbound link was followed
         link_source = ""    # the social post `followed_link` came from
@@ -984,6 +999,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         if sref:
             # Substack: use the post API (cookie-safe, definitive audience).
             post = await fetch_post(*sref)
+            if post:
+                bylines = post.get("bylines") or []
             if post and post["accessible"] and post["body_html"]:
                 html_text = post["body_html"]
                 # Substack body_html is clean article HTML — a direct DOM parse
@@ -1223,7 +1240,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         if course:
             title = episode_title(course)
         intro = course_intro(course) if course else _episode_intro(
-            title, source.name, language, preview=is_preview, fetch_issue=fetch_issue)
+            title, source.name, language, preview=is_preview, fetch_issue=fetch_issue,
+            bylines=bylines)
 
         # Outro: previews get an explicit "that was the free preview" sign-off.
         def outro(has_images: bool) -> str:
@@ -1243,6 +1261,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         }
         if course:
             prov["course"] = course
+        if bylines:
+            prov["bylines"] = bylines
         if dropped_chars:
             # How much of the article never made it into the audio, so a
             # silently-shortened episode is visible in the admin UI and to any

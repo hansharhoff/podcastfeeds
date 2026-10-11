@@ -1170,3 +1170,43 @@ def test_feed_fetch_refuses_a_redirect_into_a_private_address(monkeypatch):
     with pytest.raises(Exception) as exc:
         _run(ingest._fetch_feed_bytes("https://feeds.example/rss"))
     assert "127.0.0.1" in str(exc.value)
+
+
+# ── byline in the spoken intro ───────────────────────────────────────────────
+
+def test_episode_intro_names_the_byline_en():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Slow Boring", "en", bylines=["Halina Bennet"])
+    assert text.startswith("T. By Halina Bennet, from Slow Boring, ")
+
+
+def test_episode_intro_names_the_byline_da():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Kilde", "da", bylines=["A B", "C D"])
+    assert text.startswith("T. Af A B og C D, fra Kilde, ")
+
+
+def test_episode_intro_joins_several_bylines_en():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Src", "en", bylines=["A", "B", "C"])
+    assert text.startswith("T. By A, B and C, from Src, ")
+
+
+def test_episode_intro_without_byline_is_unchanged():
+    from app.ingest import _episode_intro
+    assert _episode_intro("T", "Src", "en").startswith("T. From Src, ")
+    assert _episode_intro("T", "Src", "en", bylines=[]).startswith("T. From Src, ")
+
+
+def test_episode_intro_skips_a_byline_that_is_just_the_source_name():
+    # A publication named after its author would otherwise say the name twice.
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Noah Smith", "en", bylines=["noah smith"])
+    assert text.startswith("T. From Noah Smith, ")
+
+
+def test_episode_intro_byline_keeps_the_preview_note():
+    from app.ingest import _episode_intro
+    text = _episode_intro("T", "Src", "en", preview=True, bylines=["A"])
+    assert text.startswith("T. By A, from Src, ")
+    assert "free preview of a paid post" in text
