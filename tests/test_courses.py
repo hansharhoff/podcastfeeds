@@ -652,3 +652,39 @@ def test_url_part_show_notes_have_the_course_header_and_the_article(monkeypatch)
         desc = s.get(Episode, ids[0]).description
     assert desc.startswith("<p><strong>Shape Up</strong>: Chapter 1: Intro<br/>")
     assert "Paragraph 11: shaping sets boundaries" in desc
+
+
+# ── feed compression: feeds carry full show notes and run to megabytes ──────
+
+def test_feed_is_gzipped_when_the_client_accepts_it(api):
+    import gzip
+
+    import httpx
+
+    from app import web
+
+    client, token, _ = api
+    plain = client.get(f"/{token}/feeds/learning.xml", headers={"Accept-Encoding": "identity"})
+    assert plain.status_code == 200 and "content-encoding" not in plain.headers
+    assert plain.headers["vary"] == "Accept-Encoding"
+    # Ask for the raw bytes: the test client would otherwise decompress them.
+    transport = httpx.ASGITransport(app=web.app)
+
+    async def raw():
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            req = c.build_request("GET", f"/{token}/feeds/learning.xml",
+                                  headers={"Accept-Encoding": "gzip, br"})
+            resp = await c.send(req, stream=True)
+            body = b"".join([chunk async for chunk in resp.aiter_raw()])
+            return resp, body
+
+    resp, body = _run(raw())
+    assert resp.headers["content-encoding"] == "gzip"
+    assert resp.headers["content-type"].startswith("application/rss+xml")
+    assert gzip.decompress(body) == plain.content
+
+
+def test_feed_respects_a_gzip_refusal(api):
+    client, token, _ = api
+    r = client.get(f"/{token}/feeds/learning.xml", headers={"Accept-Encoding": "gzip;q=0, identity"})
+    assert "content-encoding" not in r.headers

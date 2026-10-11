@@ -1,6 +1,7 @@
 """FastAPI app: feeds, media, covers, submit API and a small management UI."""
 from __future__ import annotations
 
+import gzip
 import hmac
 import logging
 import re
@@ -495,6 +496,18 @@ async def api_retry(token: str, episode_id: int):
     return RedirectResponse(url=f"/{token}/", status_code=303)
 
 
+def _accepts_gzip(accept_encoding: str) -> bool:
+    for part in accept_encoding.lower().split(","):
+        coding, _, params = part.strip().partition(";")
+        if coding.strip() in ("gzip", "*"):
+            q = params.strip().removeprefix("q=").strip()
+            try:
+                return float(q) > 0 if q else True
+            except ValueError:
+                return True
+    return False
+
+
 @app.get("/{token}/feeds/{slug}.xml")
 async def feed_xml(request: Request, token: str, slug: str):
     _check(token)
@@ -505,7 +518,15 @@ async def feed_xml(request: Request, token: str, slug: str):
         if source is None:
             raise HTTPException(status_code=404)
     xml = build_feed(config, _base(request), token, source)
-    return Response(content=xml, media_type="application/rss+xml")
+    # Feeds carry full show notes and run to megabytes; XML compresses to a
+    # fraction of that. Done here rather than as middleware so the MP3 routes
+    # keep their Content-Length and Range support.
+    headers = {"Vary": "Accept-Encoding"}
+    body = xml.encode("utf-8")
+    if _accepts_gzip(request.headers.get("accept-encoding", "")):
+        body = gzip.compress(body, compresslevel=6)
+        headers["Content-Encoding"] = "gzip"
+    return Response(content=body, media_type="application/rss+xml", headers=headers)
 
 
 @app.get("/{token}/media/{filename}")
