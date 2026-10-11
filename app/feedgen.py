@@ -57,12 +57,18 @@ def _item_xml(ep: Episode, base: str, token: str, source_name: str) -> str:
     return "\n".join(parts)
 
 
+# Newest episodes listed per feed. Retention keeps a year of episodes, so a
+# small cap here hid most of them: at 100 the combined feed reached back only
+# about two weeks.
+FEED_ITEM_LIMIT = 1000
+
+
 def build_feed(
     config: AppConfig,
     base: str,
     token: str,
     source: SourceDef | None = None,
-    limit: int = 100,
+    limit: int = FEED_ITEM_LIMIT,
 ) -> str:
     """source=None builds the combined 'all' feed."""
     names = {s.slug: s.name for s in config.sources}
