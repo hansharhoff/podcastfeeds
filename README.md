@@ -234,3 +234,7 @@ subscribe to it separately.
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m app.main     # serves on :8080, data/ + config/ in repo
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
