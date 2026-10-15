@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.sax.saxutils import escape, quoteattr
 
+from sqlalchemy.orm import defer
 from sqlmodel import select
 
 from . import db
@@ -81,12 +82,23 @@ def build_feed(
             if hidden:
                 query = query.where(Episode.source_slug.not_in(hidden))  # type: ignore[attr-defined]
         query = query.order_by(Episode.published_at.desc()).limit(limit)  # type: ignore[union-attr]
+        # The feed never reads these, and at 1000 episodes they are ~18 MB of
+        # scripts and article text per request.
+        query = query.options(*(defer(col) for col in (  # type: ignore[arg-type]
+            Episode.script, Episode.source_text, Episode.provenance, Episode.feedback)))
         episodes = s.exec(query).all()
 
     slug = source.slug if source else "all"
     title = source.name if source else f"{config.author} – All feeds"
     description = (source.description or source.name) if source else \
         "Combined feed of all podcastfeeds sources"
+    # The newest episode, not "now": a feed that changes on every request can
+    # never be answered with 304 Not Modified.
+    newest = max((ep.published_at or ep.created_at for ep in episodes), default=None)
+    built = _rfc2822(newest or datetime(2026, 1, 1, tzinfo=UTC))
+    # Per-source language when it is known; the combined feed mixes languages.
+    lang = source.language if source and source.language in ("da", "en") else ""
+    lang_xml = f"\n    <language>{lang}</language>" if lang else ""
     feed_url = f"{base}/{token}/feeds/{slug}.xml"
     cover_url = f"{base}/{token}/covers/{slug}.png"
 
@@ -99,10 +111,9 @@ def build_feed(
   <channel>
     <title>{escape(title)}</title>
     <link>{escape(base)}</link>
-    <description>{escape(description)}</description>
-    <language>da</language>
+    <description>{escape(description)}</description>{lang_xml}
     <atom:link href={quoteattr(feed_url)} rel="self" type="application/rss+xml"/>
-    <lastBuildDate>{_rfc2822(None)}</lastBuildDate>
+    <lastBuildDate>{built}</lastBuildDate>
     <itunes:author>{escape(config.author)}</itunes:author>
     <itunes:image href={quoteattr(cover_url)}/>
     <itunes:category text="News"/>

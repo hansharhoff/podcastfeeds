@@ -1,7 +1,9 @@
 """FastAPI app: feeds, media, covers, submit API and a small management UI."""
 from __future__ import annotations
 
+import contextlib
 import gzip
+import hashlib
 import hmac
 import logging
 import re
@@ -497,19 +499,32 @@ async def api_retry(token: str, episode_id: int):
 
 
 def _accepts_gzip(accept_encoding: str) -> bool:
+    """Whether the client takes gzip: an explicit gzip entry decides, else the
+    "*" wildcard does, and a q of 0 means no."""
+    weights: dict[str, float] = {}
     for part in accept_encoding.lower().split(","):
         coding, _, params = part.strip().partition(";")
-        if coding.strip() in ("gzip", "*"):
-            q = params.strip().removeprefix("q=").strip()
-            try:
-                return float(q) > 0 if q else True
-            except ValueError:
-                return True
-    return False
+        q = 1.0
+        for param in params.split(";"):
+            name, _, value = param.strip().partition("=")
+            if name.strip() == "q":
+                with contextlib.suppress(ValueError):
+                    q = float(value)
+        weights[coding.strip()] = q
+    q = weights.get("gzip", weights.get("*", 0.0))
+    return q > 0
+
+
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    tags = [t.strip().removeprefix("W/") for t in if_none_match.split(",")]
+    return "*" in tags or etag.removeprefix("W/") in tags
 
 
 @app.get("/{token}/feeds/{slug}.xml")
-async def feed_xml(request: Request, token: str, slug: str):
+def feed_xml(request: Request, token: str, slug: str):
+    # A plain def: FastAPI runs it in a worker thread. Building and compressing
+    # a 1000-episode feed takes ~0.3 s, which as an async handler froze every
+    # other request, MP3 downloads included.
     _check(token)
     config = load_config()
     source = None
@@ -521,8 +536,13 @@ async def feed_xml(request: Request, token: str, slug: str):
     # Feeds carry full show notes and run to megabytes; XML compresses to a
     # fraction of that. Done here rather than as middleware so the MP3 routes
     # keep their Content-Length and Range support.
-    headers = {"Vary": "Accept-Encoding"}
     body = xml.encode("utf-8")
+    # Apps poll feeds many times a day; most polls find nothing new, so let
+    # them be answered without sending the megabytes again.
+    etag = f'W/"{hashlib.sha256(body).hexdigest()[:32]}"'
+    headers = {"Vary": "Accept-Encoding", "ETag": etag}
+    if _etag_matches(request.headers.get("if-none-match", ""), etag):
+        return Response(status_code=304, headers=headers)
     if _accepts_gzip(request.headers.get("accept-encoding", "")):
         body = gzip.compress(body, compresslevel=6)
         headers["Content-Encoding"] = "gzip"

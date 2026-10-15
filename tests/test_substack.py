@@ -240,3 +240,62 @@ def test_fetch_post_keeps_the_byline_when_the_fuller_body_has_none(monkeypatch):
     post = _run(substack.fetch_post("slowboring", "some-post"))
     assert post["delivered_words"] == 3900
     assert post["bylines"] == ["Halina Bennet"]
+
+
+# ── bylines through the real pipeline ───────────────────────────────────────
+
+def _render_substack_post(monkeypatch, bylines):
+    from app import db, ingest
+    from app.config import SourceDef
+    from app.db import Episode
+
+    calls = []
+
+    async def fake_fetch_post(sub, slug):
+        body = "".join(f"<p>Paragraph {i} about housing policy and zoning.</p>"
+                       for i in range(40))
+        return {"title": "The dream of Blue Texas", "body_html": body,
+                "cover_image": "", "audience": "everyone", "accessible": True,
+                "wordcount": 300, "delivered_words": 300, "bylines": bylines}
+
+    async def fake_synthesize(script, **kw):
+        calls.append(script)
+        return "sb.mp3", 100, 60
+
+    async def fake_blocks(blocks, **kw):
+        calls.append("\n\n".join(b["text"] for b in blocks))
+        return "sb.mp3", 100, 60
+
+    monkeypatch.setattr(ingest, "fetch_post", fake_fetch_post)
+    monkeypatch.setattr(ingest, "synthesize", fake_synthesize)
+    monkeypatch.setattr(ingest, "synthesize_blocks", fake_blocks)
+    source = SourceDef(slug="sb-test", name="Slow Boring", type="rss",
+                       url="https://slowboring.substack.com/feed",
+                       language="en", voice="en-US-GuyNeural")
+    link = f"https://slowboring.substack.com/p/blue-texas-{len(bylines)}"
+    with db.session() as s:
+        ep = Episode(source_slug=source.slug, guid=link, title="x", link=link)
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+    _run(ingest.process_episode(ep_id, source))
+    with db.session() as s:
+        return s.get(Episode, ep_id), calls
+
+
+def test_pipeline_speaks_and_shows_the_byline(monkeypatch):
+    import json
+
+    ep, calls = _render_substack_post(monkeypatch, ["Halina Bennet"])
+    assert ep.status == "ready", ep.error
+    assert calls[-1].startswith("The dream of Blue Texas. By Halina Bennet, from Slow Boring, ")
+    assert "By Halina Bennet" in ep.description.split("</p>")[0]
+    assert json.loads(ep.provenance)["bylines"] == ["Halina Bennet"]
+
+
+def test_pipeline_without_byline_keeps_the_old_intro(monkeypatch):
+    ep, calls = _render_substack_post(monkeypatch, [])
+    assert ep.status == "ready", ep.error
+    assert calls[-1].startswith("The dream of Blue Texas. From Slow Boring, ")
+    assert "By " not in ep.description.split("</p>")[0]

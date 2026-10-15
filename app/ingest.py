@@ -641,18 +641,20 @@ def _source_label(source: SourceDef, link: str) -> str:
     return source.name
 
 
-def _shownotes_header(label: str, link: str) -> str:
+def _shownotes_header(label: str, link: str, byline: str = "") -> str:
     line = f"<p><strong>Source: {_html_escape(label)}</strong>"
+    if byline:
+        line += f"<br/>By {_html_escape(byline)}"
     if link:
         line += f' — <a href="{_attr(link)}">original</a>'
     return line + "</p>"
 
 
 def _interleaved_shownotes(label: str, segments: list[dict], link: str,
-                           max_chars: int = 24000) -> str:
+                           max_chars: int = 24000, byline: str = "") -> str:
     """Full article as HTML with text, quotes and images in reading order, so
     the listener can scroll along. Image descriptions become captions."""
-    parts = [_shownotes_header(label, link)]
+    parts = [_shownotes_header(label, link, byline)]
     used = len(parts[0])
     for seg in segments:
         if seg["type"] in ("text", "dialogue") and is_cruft_line(seg["text"]):
@@ -1073,6 +1075,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                             if is_link_forwarding_post(target):
                                 link_follow = "skipped: same-platform article"
                             else:
+                                target_bylines: list[str] = []
                                 try:
                                     # A link into Substack goes through the
                                     # post API, not the generic fetch: that is
@@ -1087,6 +1090,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                                         _, target_body = extract_article(target_html, target)
                                         target_title = tpost["title"]
                                         target_image = tpost["cover_image"]
+                                        target_bylines = tpost.get("bylines") or []
                                     else:
                                         target_html = await fetch_html(target)
                                         target_title, target_segs = extract_segments(target_html, target)
@@ -1111,6 +1115,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                                         html_text, segments, body = target_html, target_segs, target_body
                                         og_image = target_image or og_image
                                         title = target_title or title
+                                        bylines = target_bylines
                                         link_source, link = fetch_url, target
                                         followed_link = target
                                         link_follow = "followed"
@@ -1239,6 +1244,9 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         title = title.removeprefix("[Preview] ").removeprefix(f"{source_label}: ")
         if course:
             title = episode_title(course)
+        # The same names the intro speaks, for the show-notes header ("" when
+        # there is no byline or it only repeats the source's name).
+        by_line = "" if course else _spoken_byline(bylines, source.name, "en")
         intro = course_intro(course) if course else _episode_intro(
             title, source.name, language, preview=is_preview, fetch_issue=fetch_issue,
             bylines=bylines)
@@ -1289,7 +1297,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             # Too little content to summarize without hallucination: read the
             # source text verbatim and point at the show notes.
             script = f"{intro}\n\n{scrub_light(body)}\n\n{outro(False)}"
-            show_notes = _shownotes_header(source_label, link) + \
+            show_notes = _shownotes_header(source_label, link, by_line) + \
                 f"<p>{_html_escape(body[:800])}</p>"
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "verbatim-short", "voices": {"main": voice},
@@ -1303,7 +1311,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         elif source.narrate_mode == "summary":
             script, notes, gen_prov = await article_summary(title, body, language, link)
             script = f"{intro}\n\n{script}\n\n{outro(False)}"
-            show_notes = _shownotes_header(source_label, link) + \
+            show_notes = _shownotes_header(source_label, link, by_line) + \
                 "".join(f"<p>{_html_escape(ln)}</p>" for ln in notes.split("\n") if ln.strip())
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "summary", "voices": {"main": voice}, **gen_prov})
@@ -1440,13 +1448,13 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                     artist=source.name, date=str(utcnow().year), cover=cover,
                     fallback_voice=edge_voice,
                 )
-            show_notes = _interleaved_shownotes(source_label, segments, link)
+            show_notes = _interleaved_shownotes(source_label, segments, link, byline=by_line)
         else:
             # A verbatim course part is the author's own text: scrub_light
             # would turn "C#" into "C" and "__init__" into "init".
             spoken = body if course and course.get("verbatim") else scrub_light(body)
             script = f"{intro}\n\n{spoken}\n\n{outro(False)}"
-            show_notes = _shownotes_header(source_label, link) + \
+            show_notes = _shownotes_header(source_label, link, by_line) + \
                 "".join(f"<p>{_html_escape(p)}</p>" for p in body.split("\n") if p.strip())
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "plain", "voices": {"main": voice},

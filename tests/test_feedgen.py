@@ -1,4 +1,7 @@
+import asyncio
 from datetime import UTC, datetime
+
+import pytest
 
 from app.feedgen import _duration, _rfc2822
 
@@ -98,3 +101,111 @@ def test_learning_episodes_stay_out_of_the_combined_feed():
     assert "feedtest.example/a" in combined
     learning = next(s for s in config.sources if s.slug == "learning")
     assert "feedtest-course:1" in build_feed(config, "https://b", "tok", source=learning)
+
+
+# ── serving the feed: compression, conditional GET, stable output ──────────
+
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+
+    from app import web
+    from app.config import get_token
+
+    return TestClient(web.app), get_token()
+
+
+def _raw_get(path, headers):
+    """GET without the test client's automatic decompression."""
+    import httpx
+
+    from app import web
+
+    async def go():
+        transport = httpx.ASGITransport(app=web.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as c:
+            resp = await c.send(c.build_request("GET", path, headers=headers), stream=True)
+            return resp, b"".join([chunk async for chunk in resp.aiter_raw()])
+
+    return asyncio.new_event_loop().run_until_complete(go())
+
+
+def test_feed_is_gzipped_when_the_client_accepts_it(client):
+    import gzip
+
+    c, token = client
+    _ready("inbox", "https://feedtest.example/gz")
+    plain = c.get(f"/{token}/feeds/all.xml", headers={"Accept-Encoding": "identity"})
+    assert plain.status_code == 200 and "content-encoding" not in plain.headers
+    assert plain.headers["vary"] == "Accept-Encoding"
+    resp, body = _raw_get(f"/{token}/feeds/all.xml", {"Accept-Encoding": "gzip, br"})
+    assert resp.headers["content-encoding"] == "gzip"
+    assert resp.headers["content-type"].startswith("application/rss+xml")
+    assert gzip.decompress(body) == plain.content
+
+
+@pytest.mark.parametrize("header,expected", [
+    ("gzip", True), ("GZIP", True), ("br, gzip;q=0.5", True), ("*", True),
+    ("gzip;q=0", False), ("gzip; q=0.0", False), ("identity", False), ("", False),
+    ("*;q=0, gzip", True),        # an explicit gzip beats the wildcard
+    ("gzip;q=0, *", False),       # an explicit refusal beats the wildcard
+    ("br, *;q=0", False),
+])
+def test_accepts_gzip(header, expected):
+    from app.web import _accepts_gzip
+
+    assert _accepts_gzip(header) is expected
+
+
+def test_unchanged_feed_answers_not_modified(client):
+    c, token = client
+    _ready("inbox", "https://feedtest.example/etag")
+    first = c.get(f"/{token}/feeds/all.xml")
+    etag = first.headers["etag"]
+    again = c.get(f"/{token}/feeds/all.xml", headers={"If-None-Match": etag})
+    assert again.status_code == 304 and again.content == b""
+    assert again.headers["etag"] == etag
+    other = c.get(f"/{token}/feeds/all.xml", headers={"If-None-Match": '"stale", W/"x"'})
+    assert other.status_code == 200
+
+
+def test_new_episode_changes_the_etag(client):
+    c, token = client
+    _ready("inbox", "https://feedtest.example/before")
+    before = c.get(f"/{token}/feeds/all.xml").headers["etag"]
+    _ready("inbox", "https://feedtest.example/after")
+    assert c.get(f"/{token}/feeds/all.xml").headers["etag"] != before
+
+
+def test_feed_output_does_not_depend_on_the_clock(monkeypatch):
+    """lastBuildDate used to be "now", so the feed changed on every request
+    and no app could ever be told nothing was new."""
+    from app import feedgen
+    from app.config import load_config
+
+    _ready("inbox", "https://feedtest.example/clock")
+    config = load_config()
+    first = feedgen.build_feed(config, "https://b", "tok")
+    real = feedgen.datetime
+
+    class Later(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real(2031, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr(feedgen, "datetime", Later)
+    assert feedgen.build_feed(config, "https://b", "tok") == first
+
+
+def test_feed_language_follows_the_source():
+    from app.config import SourceDef, load_config
+    from app.feedgen import build_feed
+
+    config = load_config()
+    en = SourceDef(slug="feedtest-en", name="E", type="rss", language="en")
+    da = SourceDef(slug="feedtest-da", name="D", type="rss", language="da")
+    auto = SourceDef(slug="feedtest-auto", name="A", type="rss", language="auto")
+    assert "<language>en</language>" in build_feed(config, "https://b", "tok", source=en)
+    assert "<language>da</language>" in build_feed(config, "https://b", "tok", source=da)
+    assert "<language>" not in build_feed(config, "https://b", "tok", source=auto)
+    assert "<language>" not in build_feed(config, "https://b", "tok")  # mixed
