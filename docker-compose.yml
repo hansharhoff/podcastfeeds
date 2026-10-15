@@ -1,6 +1,13 @@
 services:
   podcastfeeds:
-    build: .
+    build:
+      context: .
+      args:
+        # Must match the owner of ./data and ./config on Linux hosts; set
+        # APP_UID/APP_GID in .env (`id -u` / `id -g`). Docker Desktop on macOS
+        # maps ownership itself, so the default works there.
+        UID: ${APP_UID:-1002}
+        GID: ${APP_GID:-1002}
     container_name: podcastfeeds
     restart: unless-stopped
     ports:

@@ -5,6 +5,10 @@ news digests (DR.dk etc.), and arbitrary articles shared from your phone — all
 turned into MP3s with free neural TTS (edge-tts) and served as private RSS
 feeds over Tailscale.
 
+**New here? Start with [Getting started](docs/getting-started.md)** (macOS,
+Linux and Windows). The rest of this README documents the author's own
+install in detail.
+
 ## Architecture
 
 ```

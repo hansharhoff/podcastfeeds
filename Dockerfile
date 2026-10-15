@@ -10,10 +10,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 # Run as a non-root user. Default UID/GID match the host owner of the bind-mounted
-# /data and /config so writes work; override with --build-arg on a different host.
+# /data and /config so writes work; set APP_UID/APP_GID in .env on another host.
 ARG UID=1002
 ARG GID=1002
-RUN groupadd -g "$GID" app && useradd -u "$UID" -g "$GID" -m app
+# -o: the host IDs may collide with a group or user the base image already
+# has (GID 20 is "dialout" in Debian, "staff" on macOS).
+RUN groupadd -o -g "$GID" app && useradd -o -u "$UID" -g "$GID" -m app
 USER app
 
 ENV DATA_DIR=/data CONFIG_DIR=/config PORT=8080
