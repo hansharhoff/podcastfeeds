@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from fastapi.templating import Jinja2Templates
 from sqlmodel import select
 
-from . import db
+from . import db, monitor
 from .config import BASE_URL, MEDIA_DIR, SourceDef, get_token, load_config
 from .courses import (
     CourseError,
@@ -243,7 +243,7 @@ async def index(request: Request, token: str):
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
         "el": el, "paid_health": paid_health, "stuck": stuck_episodes(),
-        "queue": queue,
+        "queue": queue, "health": monitor.LAST,
     })
 
 
@@ -532,6 +532,8 @@ def feed_xml(request: Request, token: str, slug: str):
         source = next((s for s in config.sources if s.slug == slug), None)
         if source is None:
             raise HTTPException(status_code=404)
+    if "pocketcasts" in request.headers.get("user-agent", "").lower():
+        monitor.record("pocketcasts", True)
     xml = build_feed(config, _base(request), token, source)
     # Feeds carry full show notes and run to megabytes; XML compresses to a
     # fraction of that. Done here rather than as middleware so the MP3 routes

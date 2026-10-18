@@ -14,7 +14,7 @@ import httpx
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from . import db
+from . import db, monitor
 from .config import MEDIA_DIR, PIPELINE_VERSION, SourceDef, load_config, pick_voice
 from .courses import (
     course_intro,
@@ -46,6 +46,7 @@ from .extract import (
     segments_from_clean_html,
     strip_html,
 )
+from .health import note_started
 from .substack import fetch_post, substack_ref, substack_ref_from_url
 from .summarize import (
     article_summary,
@@ -294,8 +295,10 @@ async def poll_rss_source(source: SourceDef) -> int:
         *(_parse_feed(u) for u in urls), return_exceptions=True
     )
     entries = []
+    feed_errors: list[str] = []
     for url, parsed in zip(urls, feeds, strict=True):
         if isinstance(parsed, Exception) or not getattr(parsed, "entries", None):
+            feed_errors.append(f"{url}: {_feed_error(parsed)}")
             # Name the URL: a multi-feed source (ai-releases has three) logged
             # only "a feed failed", so identifying an intermittently-malformed
             # feed meant re-parsing all of them by hand (2026-08-01).
@@ -304,6 +307,10 @@ async def poll_rss_source(source: SourceDef) -> int:
             continue
         # Take enough for both generation and the "keep latest N available" set.
         entries.extend(parsed.entries[: max(source.max_items_per_poll * 4, source.keep_available + 2)])
+    # One working feed is enough: a multi-feed source with one dead URL still
+    # produces episodes, and the dead one is in the log.
+    monitor.record(f"poll:{source.slug}", len(feed_errors) < len(urls),
+                   "; ".join(feed_errors))
     entries.sort(
         key=lambda e: e.get("published_parsed") or e.get("updated_parsed") or (0,),
         reverse=True,
@@ -956,6 +963,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         title, link, description = ep.title, ep.link, ep.description
         source_text = ep.source_text
         course = course_meta(ep.provenance)
+    note_started(ep_id)
 
     def _keep_course(prov_: dict) -> dict:
         # Skip exits rewrite provenance; the course key must survive them or
@@ -1793,6 +1801,7 @@ async def cleanup_orphaned_media(min_age_seconds: int = 3600) -> int:
         return 0
     with db.session() as s:
         referenced = {row for row in s.exec(select(Episode.audio_file)).all() if row}
+    referenced.add(monitor.ALERT_AUDIO)  # the health alert's tone has no episode row
     cutoff = time.time() - min_age_seconds
     removed = 0
     for path in MEDIA_DIR.iterdir():

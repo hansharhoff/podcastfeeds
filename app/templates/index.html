@@ -51,6 +51,20 @@
 <body>
 <h1>🎙 podcastfeeds</h1>
 
+{% if health.problems %}
+<div style="background:#7a2e1f;color:#fff;padding:.7em 1em;border-radius:6px;margin:.5em 0 1em;">
+  ⚠ <strong>{{ health.problems|length }} health problem{{ 's' if health.problems|length != 1 }}</strong>
+  (also shown as an alert at the top of all.xml)
+  <ul style="margin:.4em 0 0;">
+  {% for p in health.problems %}<li><strong>{{ p.summary }}</strong>. {{ p.detail }}
+    <small style="color:#f3d9d2;">since {{ p.since[:16]|replace('T', ' ') }} UTC</small></li>{% endfor %}
+  </ul>
+  <small style="color:#f3d9d2;">checked {{ health.checked_at }}</small>
+</div>
+{% elif health.checked_at %}
+<p><small class="muted">Health ✓ (checked {{ health.checked_at }})</small></p>
+{% endif %}
+
 {% set broken = paid_health.results | selectattr('ok', 'equalto', false) | list %}
 {% if broken %}
 <div style="background:#7a2e1f;color:#fff;padding:.7em 1em;border-radius:6px;margin:.5em 0 1em;">

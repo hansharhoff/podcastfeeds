@@ -101,10 +101,15 @@ async def llm_with_meta(prompt: str, model: str = "", tools: list[str] | None = 
     tools = tools or []
     async with _llm_lock:
         if LLM_URL:
+            from . import monitor
             try:
-                return await _llm_via_shim(prompt, model, tools, thinking)
+                result = await _llm_via_shim(prompt, model, tools, thinking)
             except Exception as exc:
                 log.warning("LLM shim failed (%s), trying CLI", exc)
+                monitor.record("llm", False, f"{type(exc).__name__}: {exc}")
+            else:
+                monitor.record("llm", True)
+                return result
         if shutil.which("claude"):
             return await _llm_via_cli(prompt, model, tools, thinking), {"searches": None}
     raise RuntimeError("no LLM backend available")

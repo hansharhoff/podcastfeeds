@@ -8,8 +8,9 @@ failures also log a WARNING.
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
 from sqlmodel import select
@@ -35,26 +36,56 @@ def newest_paid_slug(archive_items: list | None) -> str | None:
     return None
 
 
+_STARTED_KEY = "health:started"
+
+
+def note_started(ep_id: int) -> None:
+    """Record when an episode last started processing. A retried or redone
+    episode keeps its original created_at, so without this every retry of an
+    old episode looked stuck the moment it was queued (2026-10-18: 28 requeued
+    episodes flagged while they were busy rendering)."""
+    try:
+        with db.session() as s:
+            started = json.loads(db.kv_get(s, _STARTED_KEY) or "{}")
+            live = set(s.exec(select(Episode.id).where(
+                Episode.status.in_(("pending", "processing")))).all())  # type: ignore[attr-defined]
+            started = {k: v for k, v in started.items() if int(k) in live}
+            started[str(ep_id)] = utcnow().replace(tzinfo=None).isoformat()
+            db.kv_set(s, _STARTED_KEY, json.dumps(started))
+            s.commit()
+    except Exception:
+        log.exception("note_started failed for episode %s", ep_id)
+
+
 def stuck_episodes(max_age_hours: int = 12) -> list[dict]:
     """Episodes sitting in pending/processing longer than a poll cycle should
     ever leave them — the ep-312 defer-loop sat invisible for 28h because only
-    access was monitored, not pipeline outcomes. Rendered by the admin page."""
+    access was monitored, not pipeline outcomes. Rendered by the admin page.
+    Age counts from the latest start of processing when there is one."""
     # SQLite hands datetimes back naive; utcnow() is aware — compare naive-UTC.
     now = utcnow().replace(tzinfo=None)
     cutoff = now - timedelta(hours=max_age_hours)
     with db.session() as s:
+        started = json.loads(db.kv_get(s, _STARTED_KEY) or "{}")
         rows = s.exec(
             select(Episode).where(
                 Episode.status.in_(("pending", "processing")),  # type: ignore[attr-defined]
                 Episode.created_at < cutoff,
             ).order_by(Episode.created_at)
         ).all()
-        return [{
-            "id": e.id, "title": e.title, "status": e.status,
-            "source_slug": e.source_slug, "error": e.error,
-            "age_hours": round((now - e.created_at.replace(tzinfo=None))
-                               .total_seconds() / 3600),
-        } for e in rows]
+        out = []
+        for e in rows:
+            since = e.created_at.replace(tzinfo=None)
+            if str(e.id) in started:
+                since = max(since, datetime.fromisoformat(started[str(e.id)]))
+            if since >= cutoff:
+                continue
+            out.append({
+                "id": e.id, "title": e.title, "status": e.status,
+                "source_slug": e.source_slug, "error": e.error,
+                "age_hours": round((now - since).total_seconds() / 3600),
+            })
+        return out
 
 
 async def check_paid_access() -> dict:

@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 import httpx
 from sqlmodel import select
 
+from . import monitor
 from .config import DATA_DIR, SourceDef, load_config
 from .db import Episode, TickTickItem
 from .ingest import submit_url
@@ -96,12 +97,15 @@ async def poll_ticktick() -> int:
             resp = await client.get(f"{API}/project")
             if resp.status_code == 401:
                 log.warning("ticktick: access token expired/invalid — rerun scripts/ticktick_auth.py")
+                monitor.record("ticktick", False, "access token expired or invalid (401)")
                 return 0
             resp.raise_for_status()
             projects = [p for p in resp.json() if p.get("name", "").lower() in wanted_lc]
             if not projects:
                 log.warning("ticktick: none of the lists %r found", wanted)
+                monitor.record("ticktick", False, f"none of the lists {wanted!r} found")
                 return 0
+            monitor.record("ticktick", True)
             matched_lc = {p.get("name", "").lower() for p in projects}
             if len(matched_lc) < len(wanted_lc):
                 # A watched list vanished from the /project listing entirely
@@ -130,8 +134,9 @@ async def poll_ticktick() -> int:
                 # item's task is gone — an API blip must not wipe the queue.
                 if all_lists_ok:
                     _auto_dismiss(s, open_ids)
-    except Exception:
+    except Exception as exc:
         log.exception("ticktick poll failed")
+        monitor.record("ticktick", False, f"{type(exc).__name__}: {exc}")
     return new_items
 
 

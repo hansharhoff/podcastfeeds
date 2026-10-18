@@ -210,6 +210,17 @@ subscribe to it separately.
   container. (`schtasks /SC ONLOGON` is the elevated alternative if preferred.)
 - Tailscale serve/funnel config persists on its own.
 
+## Health monitoring
+
+`app/monitor.py` checks outcomes every 30 minutes rather than known causes, so a
+new kind of breakage still shows up: a wave of failed episodes, nothing new in
+36 hours, episodes stuck for 12 hours, an expired Substack cookie, a feed
+failing for a day, the LLM helper or TickTick down, Pocket Casts no longer
+fetching, and low disk space. Open problems appear as a banner on the admin
+page and as a short alert episode at the top of `all.xml`, which disappears
+once they are fixed. The alert's audio is a tone made with ffmpeg, so it still
+works when narration itself is what broke.
+
 ## Operational notes
 
 - Episodes older than `retention_days` (default 365) are deleted nightly.

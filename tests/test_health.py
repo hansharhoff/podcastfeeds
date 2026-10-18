@@ -127,3 +127,22 @@ def test_a_non_ascii_token_path_404s_instead_of_500ing():
     with pytest.raises(HTTPException) as exc:
         _check("æøå")
     assert exc.value.status_code == 404
+
+
+def test_a_retried_old_episode_is_not_stuck_while_it_runs():
+    """Retrying keeps the original created_at; age counts from the restart."""
+    from datetime import timedelta
+
+    from app import db
+    from app.db import Episode, utcnow
+    from app.health import note_started, stuck_episodes
+
+    with db.session() as s:
+        ep = Episode(source_slug="a", guid="g-retried", title="Retried",
+                     status="processing", created_at=utcnow() - timedelta(days=4))
+        s.add(ep)
+        s.commit()
+        s.refresh(ep)
+        ep_id = ep.id
+    note_started(ep_id)
+    assert "Retried" not in [e["title"] for e in stuck_episodes(max_age_hours=12)]

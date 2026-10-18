@@ -106,6 +106,11 @@ def build_feed(
         _item_xml(ep, base, token, names.get(ep.source_slug, config.author))
         for ep in episodes
     )
+    if source is None:
+        from .monitor import alert_item_xml
+
+        alert = alert_item_xml(base, token)
+        items = f"{alert}\n{items}" if alert else items
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
