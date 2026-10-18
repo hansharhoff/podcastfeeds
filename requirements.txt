@@ -5,7 +5,7 @@ fastapi==0.139.0
 uvicorn[standard]==0.51.0
 feedparser==6.0.12
 trafilatura==2.1.0
-edge-tts==7.2.8
+edge-tts==7.3.1
 mutagen==1.48.1
 httpx==0.28.1
 apscheduler==3.11.3
