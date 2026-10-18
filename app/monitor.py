@@ -19,8 +19,8 @@ import json
 import logging
 import re
 import shutil
-import subprocess
 from datetime import datetime, timedelta
+from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
 from sqlmodel import select
@@ -44,6 +44,7 @@ MIN_FREE_BYTES = 2 * 1024**3
 STUCK_AFTER_HOURS = 12
 
 ALERT_AUDIO = "monitor-alert.mp3"
+_TONE = Path(__file__).parent / "assets" / "alert.mp3"
 
 # Latest result, rendered by the admin page.
 LAST: dict = {"checked_at": "", "problems": []}
@@ -287,24 +288,19 @@ async def run_checks_job() -> None:
 # ── the feed alert ──────────────────────────────────────────────────────────
 
 def _alert_audio() -> str:
-    """A short tone, made with ffmpeg rather than TTS: the alert has to work
-    when narration is the thing that is broken. Returns the file name, or ""
-    when it can't be made."""
+    """A short tone shipped with the code, not made by TTS or ffmpeg: the alert
+    has to work when narration is the thing that is broken. Copied into the
+    media directory so it is served like any episode. Returns the file name,
+    or "" when it can't be put there."""
     path = MEDIA_DIR / ALERT_AUDIO
     if path.exists():
         return ALERT_AUDIO
     try:
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-             "-i", "sine=frequency=660:duration=0.4,apad=pad_dur=0.3",
-             "-f", "lavfi", "-i", "sine=frequency=880:duration=0.4",
-             "-filter_complex", "[0][1]concat=n=2:v=0:a=1",
-             "-codec:a", "libmp3lame", "-b:a", "64k", str(path)],
-            check=True, timeout=30)
+        shutil.copyfile(_TONE, path)
         return ALERT_AUDIO
-    except Exception:
-        log.exception("could not make the alert tone")
+    except OSError:
+        log.exception("could not place the alert tone")
         return ""
 
 

@@ -279,6 +279,19 @@ def test_alert_tone_needs_no_tts(monkeypatch):
     assert (monitor.MEDIA_DIR / monitor.ALERT_AUDIO).stat().st_size > 1000
 
 
+def test_alert_needs_no_ffmpeg(monkeypatch):
+    """CI has no ffmpeg, and a broken ffmpeg must not silence the alert."""
+    import subprocess
+
+    def no_subprocess(*a, **k):
+        raise AssertionError("alert ran a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", no_subprocess)
+    (monitor.MEDIA_DIR / monitor.ALERT_AUDIO).unlink(missing_ok=True)
+    _problem()
+    assert monitor.ALERT_AUDIO in monitor.alert_item_xml("https://b", "tok")
+
+
 # ── wiring ──────────────────────────────────────────────────────────────────
 
 def test_rss_poll_reports_its_outcome(monkeypatch):

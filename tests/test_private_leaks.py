@@ -88,3 +88,16 @@ def test_commit_message_scanning_catches_a_private_phrase(tmp_path):
     msg.write_text("Explain the guard\n\nverified against some obscure reading item\n")
     hits = scan_message_file(str(msg), phrases)
     assert len(hits) == 1 and "some obscure reading item" in hits[0]
+
+
+def test_a_staged_binary_file_does_not_crash_the_scan(tmp_path, monkeypatch):
+    import subprocess
+
+    from app.privacy import scan_staged
+
+    monkeypatch.chdir(tmp_path)
+    subprocess.run(["git", "init", "-q"], check=True)
+    (tmp_path / "tone.mp3").write_bytes(b"ID3\x03\x00\xff\xfb\x90\x00" * 50)
+    (tmp_path / "notes.txt").write_text("mentions the secret phrase here\n")
+    subprocess.run(["git", "add", "tone.mp3", "notes.txt"], check=True)
+    assert scan_staged(["secret phrase"]) == ["notes.txt:1: secret phrase"]

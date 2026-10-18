@@ -60,8 +60,10 @@ def scan_text(text: str, phrases) -> list[tuple[int, str]]:
 
 
 def _git(*args: str) -> str:
+    # errors="ignore", as for tracked files: a staged binary (an MP3, an
+    # image) is not UTF-8, and a crash here blocked the commit outright.
     return subprocess.run(("git", *args), capture_output=True, text=True,
-                          check=False).stdout
+                          encoding="utf-8", errors="ignore", check=False).stdout
 
 
 def local_private_phrases() -> list[str]:
