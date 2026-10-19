@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -209,3 +209,48 @@ def test_feed_language_follows_the_source():
     assert "<language>da</language>" in build_feed(config, "https://b", "tok", source=da)
     assert "<language>" not in build_feed(config, "https://b", "tok", source=auto)
     assert "<language>" not in build_feed(config, "https://b", "tok")  # mixed
+
+
+# ── a year of episodes: full notes for recent ones, short notes for the rest ─
+
+def test_older_items_get_shortened_show_notes(monkeypatch):
+    from xml.etree import ElementTree
+
+    from app import db, feedgen
+    from app.config import SourceDef, load_config
+    from app.db import Episode, utcnow
+
+    monkeypatch.setattr(feedgen, "FULL_NOTES_ITEMS", 1)
+    body = "".join(f"<p>Paragraph {i} " + "word " * 40 + "</p>" for i in range(60))
+    now = utcnow()
+    with db.session() as s:
+        for i, slug_guid in enumerate(("new", "old")):
+            s.add(Episode(source_slug="feedtest-notes", guid=slug_guid, title=slug_guid,
+                          status="ready", audio_file="a.mp3", audio_bytes=1,
+                          link=f"https://x.example/{slug_guid}",
+                          description=f"<p><strong>Source: S</strong></p>{body}",
+                          published_at=now - timedelta(days=i)))
+        s.commit()
+    src = SourceDef(slug="feedtest-notes", name="N", type="rss")
+    xml = feedgen.build_feed(load_config(), "https://b", "tok", source=src)
+    items = {i.findtext("title"): i.findtext("description")
+             for i in ElementTree.fromstring(xml).find("channel").findall("item")}
+    assert len(items["new"]) > 10_000                     # untouched
+    old = items["old"]
+    assert len(old) < feedgen.SHORT_NOTES_CHARS + 300
+    assert old.startswith("<p><strong>Source: S</strong></p>")
+    assert old.count("<p>") == old.count("</p>")          # cut between paragraphs
+    assert 'href="https://x.example/old"' in old
+
+
+def test_short_notes_leave_brief_descriptions_alone():
+    from app.feedgen import _short_notes
+
+    assert _short_notes("<p>tiny</p>", "https://x") == "<p>tiny</p>"
+    assert _short_notes("plain text " * 300, "https://x").endswith("…")
+
+
+def test_feed_limit_covers_a_year():
+    from app.feedgen import FEED_ITEM_LIMIT
+
+    assert FEED_ITEM_LIMIT >= 3000

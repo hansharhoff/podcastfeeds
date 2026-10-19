@@ -27,9 +27,28 @@ def _duration(seconds: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _item_xml(ep: Episode, base: str, token: str, source_name: str) -> str:
+def _short_notes(notes: str, link: str) -> str:
+    """The start of an episode's show notes, cut between paragraphs, with a
+    pointer to the original. Used for older items so a year of episodes fits
+    in a feed a podcast app will still fetch."""
+    if len(notes) <= SHORT_NOTES_CHARS:
+        return notes
+    if not notes.lstrip().startswith("<"):
+        return notes[:SHORT_NOTES_CHARS].rsplit(" ", 1)[0] + "…"
+    cut = notes.rfind("</p>", 0, SHORT_NOTES_CHARS)
+    if cut == -1:
+        return notes  # no paragraph to cut at; leave it whole rather than break it
+    more = (f'<a href="{escape(link)}">Read the original</a>.' if link
+            else "Full notes in newer copies of this feed.")
+    return notes[:cut + 4] + f"\n<p><em>Show notes shortened for older episodes. {more}</em></p>"
+
+
+def _item_xml(ep: Episode, base: str, token: str, source_name: str,
+              short: bool = False) -> str:
     audio_url = f"{base}/{token}/media/{ep.audio_file}" if ep.audio_file else ep.audio_url
     raw_desc = ep.description or ep.title
+    if short:
+        raw_desc = _short_notes(raw_desc, ep.link)
     if raw_desc.lstrip().startswith("<"):  # HTML show notes (images etc.)
         desc = f"<![CDATA[{raw_desc.replace(']]>', ']]&gt;')}]]>"
     else:
@@ -58,10 +77,13 @@ def _item_xml(ep: Episode, base: str, token: str, source_name: str) -> str:
     return "\n".join(parts)
 
 
-# Newest episodes listed per feed. Retention keeps a year of episodes, so a
-# small cap here hid most of them: at 100 the combined feed reached back only
-# about two weeks.
-FEED_ITEM_LIMIT = 1000
+# Newest episodes listed per feed: enough for a year of the combined feed
+# (about 7.4 episodes a day in October 2026), which retention also keeps.
+FEED_ITEM_LIMIT = 3000
+# Full show notes run ~13 KB an episode, so a year of them would be ~38 MB.
+# The newest items keep them; older ones get the opening paragraphs.
+FULL_NOTES_ITEMS = 300
+SHORT_NOTES_CHARS = 1500
 
 
 def build_feed(
@@ -103,8 +125,9 @@ def build_feed(
     cover_url = f"{base}/{token}/covers/{slug}.png"
 
     items = "\n".join(
-        _item_xml(ep, base, token, names.get(ep.source_slug, config.author))
-        for ep in episodes
+        _item_xml(ep, base, token, names.get(ep.source_slug, config.author),
+                  short=n >= FULL_NOTES_ITEMS)
+        for n, ep in enumerate(episodes)
     )
     if source is None:
         from .monitor import alert_item_xml
