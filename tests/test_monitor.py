@@ -332,3 +332,56 @@ def test_media_sweep_keeps_the_alert_tone():
     os.utime(path, (0, 0))  # make it look ancient
     asyncio.new_event_loop().run_until_complete(ingest.cleanup_orphaned_media())
     assert path.exists()
+
+
+# ── heartbeat ───────────────────────────────────────────────────────────────
+
+def test_heartbeat_flags_only_new_problems(monkeypatch):
+    monkeypatch.setattr(monitor, "CHECKS", (lambda: [{"key": "k", "summary": "s", "detail": "d"}],))
+    assert monitor.heartbeat_payload(monitor.run_checks()) == {
+        "problems": 1, "new": ["s"], "summaries": ["s"]}
+    assert monitor.heartbeat_payload(monitor.run_checks())["new"] == []
+
+
+def test_heartbeat_posts_when_configured(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(200)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(monitor.httpx, "AsyncClient",
+                        lambda **k: real(transport=httpx.MockTransport(handler)))
+    monkeypatch.setenv("HEARTBEAT_URL", "https://ha.example/api/webhook/x")
+    monkeypatch.setattr(monitor, "CHECKS", ())
+    asyncio.new_event_loop().run_until_complete(monitor.run_checks_job())
+    assert sent == [{"problems": 0, "new": [], "summaries": []}]
+
+
+def test_heartbeat_failure_never_raises(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    def down(request):
+        raise httpx.ConnectError("no route")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(monitor.httpx, "AsyncClient",
+                        lambda **k: real(transport=httpx.MockTransport(down)))
+    monkeypatch.setenv("HEARTBEAT_URL", "https://ha.example/api/webhook/x")
+    asyncio.new_event_loop().run_until_complete(monitor.send_heartbeat([]))
+
+
+def test_no_heartbeat_url_no_request(monkeypatch):
+    import asyncio
+
+    monkeypatch.delenv("HEARTBEAT_URL", raising=False)
+    monkeypatch.setattr(monitor.httpx, "AsyncClient",
+                        lambda **k: (_ for _ in ()).throw(AssertionError("posted")))
+    asyncio.new_event_loop().run_until_complete(monitor.send_heartbeat([]))

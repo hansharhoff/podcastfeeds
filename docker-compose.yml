@@ -30,5 +30,7 @@ services:
       - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
       - ELEVENLABS_CHAR_BUDGET=${ELEVENLABS_CHAR_BUDGET:-1000000}
       - ELEVENLABS_MODEL=${ELEVENLABS_MODEL:-eleven_flash_v2_5}
+      # Optional outside watchdog: POSTed after every health check (app/monitor.py).
+      - HEARTBEAT_URL=${HEARTBEAT_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"

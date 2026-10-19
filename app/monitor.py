@@ -10,6 +10,11 @@ Problems surface in three places: a WARNING in the log, a banner on the admin
 page, and an alert item at the top of the combined feed, because the podcast
 app is the one screen Hans looks at every day.
 
+None of that can report the machine itself being off. For that, set
+HEARTBEAT_URL to a webhook outside this machine (a Home Assistant webhook
+trigger, healthchecks.io, ...): every check run POSTs to it, and the receiver
+alerts when the posts stop.
+
 Components report in through `record()`; `run_checks()` turns those reports
 and the episode table into a list of open problems.
 """
@@ -17,12 +22,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
+import httpx
 from sqlmodel import select
 
 from . import db
@@ -270,7 +277,8 @@ def run_checks() -> list[dict]:
         current = {p["key"]: seen.get(p["key"], now) for p in problems}
         for p in problems:
             p["since"] = current[p["key"]]
-            if p["key"] not in seen:
+            p["new"] = p["key"] not in seen
+            if p["new"]:
                 log.warning("HEALTH PROBLEM: %s. %s", p["summary"], p["detail"])
         for key in set(seen) - set(current):
             log.info("health problem resolved: %s", key)
@@ -281,8 +289,32 @@ def run_checks() -> list[dict]:
     return problems
 
 
+def heartbeat_payload(problems: list[dict]) -> dict:
+    """What the outside receiver gets: enough to notify on new problems
+    without knowing anything about this app."""
+    return {"problems": len(problems),
+            "new": [p["summary"] for p in problems if p.get("new")],
+            "summaries": [p["summary"] for p in problems]}
+
+
+async def send_heartbeat(problems: list[dict]) -> None:
+    """POST to HEARTBEAT_URL if set. Never raises: if the receiver is down,
+    the missing heartbeat is itself what it alerts on."""
+    url = os.environ.get("HEARTBEAT_URL", "").strip()
+    if not url:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(url, json=heartbeat_payload(problems))
+            r.raise_for_status()
+    except Exception as exc:
+        # The URL is a secret (anyone holding it can silence the alarm); log the
+        # error type only.
+        log.warning("heartbeat failed: %s", type(exc).__name__)
+
+
 async def run_checks_job() -> None:
-    run_checks()
+    await send_heartbeat(run_checks())
 
 
 # ── the feed alert ──────────────────────────────────────────────────────────
