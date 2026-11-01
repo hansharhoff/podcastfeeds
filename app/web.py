@@ -202,14 +202,6 @@ async def index(request: Request, token: str):
         if ep.status == "ready":
             g["ready"] += 1
 
-    # "Needs your decision": ready episodes that look off — very short (possible
-    # paywall stub / thin content). Surfaced at the top for a keep/redo call.
-    decisions = [
-        ep for ep in episodes
-        if ep.status == "ready" and 0 < (ep.audio_seconds or 0) < 90
-        and "accepted-as-is" not in ep.feedback
-    ]
-
     from . import elevenlabs
     from .voices import get_roster
 
@@ -239,7 +231,7 @@ async def index(request: Request, token: str):
     queue = _ticktick_queue_rows(q_rows, q_eps)
 
     return templates.TemplateResponse(request, "index.html", {
-        "groups": groups, "decisions": decisions, "feeds": feeds,
+        "groups": groups, "feeds": feeds,
         "token": token, "base": base, "roster": get_roster(),
         "fixed_voices": {s.slug: s.voice for s in config.sources if s.voice},
         "el": el, "paid_health": paid_health, "stuck": stuck_episodes(),
@@ -265,20 +257,6 @@ async def api_eltoggle(token: str, slug: str):
     from . import elevenlabs
     elevenlabs.set_enabled(slug, not elevenlabs.el_enabled(slug))
     log.info("elevenlabs %s for %s", "ON" if elevenlabs.el_enabled(slug) else "OFF", slug)
-    return RedirectResponse(url=f"/{token}/", status_code=303)
-
-
-@app.post("/{token}/api/dismiss/{episode_id}")
-async def api_dismiss(token: str, episode_id: int):
-    """Accept a flagged episode as-is (remove it from the decisions list)."""
-    _check(token)
-    with db.session() as s:
-        ep = s.get(Episode, episode_id)
-        if not ep:
-            raise HTTPException(status_code=404)
-        ep.feedback = f"accepted-as-is\n{ep.feedback}".strip()
-        s.add(ep)
-        s.commit()
     return RedirectResponse(url=f"/{token}/", status_code=303)
 
 

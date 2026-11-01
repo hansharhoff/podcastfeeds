@@ -163,27 +163,6 @@
 </ul>
 </details>
 
-{% if decisions %}
-<details class="section" data-key="decisions" open>
-<summary>⚠️ Needs your decision <small class="muted">({{ decisions|length }})</small></summary>
-<p><small class="muted">Ready episodes that look unusually short — possibly a paywall stub or thin content. Keep it, or regenerate/flag it.</small></p>
-<table>
-  {% for ep in decisions %}
-  <tr>
-    <td><a href="/{{ token }}/episode/{{ ep.id }}">{{ ep.title }}</a> <small class="muted">({{ ep.source_slug }}, {{ ep.audio_seconds }}s)</small></td>
-    <td class="row-actions">
-      <form method="post" action="/{{ token }}/api/dismiss/{{ ep.id }}"><button title="keep as-is">keep</button></form>
-      {% if not ep.guid.startswith('digest:') %}
-      <form method="post" action="/{{ token }}/api/redo/{{ ep.id }}" onsubmit="return confirm('Regenerate with the latest pipeline?')"><button>↻ redo</button></form>
-      {% endif %}
-      <form method="post" action="/{{ token }}/api/feedback/{{ ep.id }}"><button name="verdict" value="👎">👎</button></form>
-    </td>
-  </tr>
-  {% endfor %}
-</table>
-</details>
-{% endif %}
-
 {% if queue %}
 <details class="section" data-key="queue" open>
 <summary>📥 TickTick queue <small class="muted">({{ queue|length }} item{{ 's' if queue|length != 1 }})</small></summary>
