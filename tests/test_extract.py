@@ -926,3 +926,37 @@ def test_fetch_image_refuses_a_redirect_into_the_lan(monkeypatch):
     _patch_client(monkeypatch, _redirecting_transport("http://10.0.0.5/admin.png"))
     monkeypatch.setattr(extract, "_blocked_target", lambda u: "10.0.0" in u)
     assert _run_async(extract.fetch_image_jpeg("https://public.example/start")) is None
+
+
+# Substack @-mentions arrive as empty spans; the name lives only in data-attrs
+# and is filled in by JavaScript (ep 1407 feedback: every mentioned person
+# vanished, leaving "is watching for:").
+_MENTION = (
+    '<p><span class="mention-wrap" data-attrs="{&quot;name&quot;:&quot;Jerusalem '
+    'Demsas&quot;,&quot;id&quot;:18091829,&quot;type&quot;:&quot;user&quot;}" '
+    'data-component-name="MentionToDOM"></span> is watching for:</p>'
+)
+
+
+def test_fill_mentions_writes_the_name_into_empty_mention_spans():
+    from app.extract import fill_mentions
+
+    assert "Jerusalem Demsas</span> is watching for:" in fill_mentions(_MENTION)
+
+
+def test_fill_mentions_leaves_other_markup_and_filled_spans_alone():
+    from app.extract import fill_mentions
+
+    plain = '<p><span class="other" data-attrs="{&quot;name&quot;:&quot;X&quot;}"></span>hi</p>'
+    assert fill_mentions(plain) == plain
+    filled = _MENTION.replace("></span>", ">Already</span>")
+    assert fill_mentions(filled) == filled
+    broken = _MENTION.replace("&quot;name&quot;", "&quot;nom&quot;")
+    assert fill_mentions(broken) == broken
+
+
+def test_clean_html_segments_keep_mentioned_names():
+    from app.extract import segments_from_clean_html
+
+    _, segs = segments_from_clean_html(_MENTION)
+    assert any("Jerusalem Demsas is watching for:" in s.get("text", "") for s in segs)

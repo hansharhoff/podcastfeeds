@@ -362,8 +362,37 @@ async def fetch_pdf_text(url: str) -> str:
     return text
 
 
+_MENTION_SPAN = re.compile(
+    r'(<span\b[^>]*\bclass="[^"]*\bmention-wrap\b[^"]*"[^>]*>)\s*(</span>)'
+)
+_DATA_ATTRS = re.compile(r'\bdata-attrs="([^"]*)"')
+
+
+def fill_mentions(html_text: str) -> str:
+    """Write the person's name into Substack's empty @-mention spans.
+
+    Substack ships a mention as an empty <span class="mention-wrap"> whose name
+    sits only in its data-attrs JSON, filled in later by JavaScript, so every
+    text extractor saw nothing there (ep 1407 feedback)."""
+    if "mention-wrap" not in html_text:
+        return html_text
+
+    def fill(m: re.Match) -> str:
+        attrs = _DATA_ATTRS.search(m.group(1))
+        try:
+            name = json.loads(html.unescape(attrs.group(1))).get("name") if attrs else None
+        except (ValueError, AttributeError):
+            name = None
+        if not isinstance(name, str) or not name.strip():
+            return m.group(0)
+        return f"{m.group(1)}{html.escape(name.strip())}{m.group(2)}"
+
+    return _MENTION_SPAN.sub(fill, html_text)
+
+
 def extract_article(html_text: str, url: str = "") -> tuple[str, str]:
     """Returns (title, body_text)."""
+    html_text = fill_mentions(html_text)
     meta = trafilatura.extract_metadata(html_text, default_url=url or None)
     title = (meta.title if meta else "") or ""
     # Page titles usually carry site-name cruft: "Headline | Section | Site"
@@ -731,7 +760,7 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
     from lxml import html as lh
 
     try:
-        root = lh.fromstring(f"<div>{body_html}</div>")
+        root = lh.fromstring(f"<div>{fill_mentions(body_html)}</div>")
     except Exception:
         return "", []
     segments: list[dict] = []
@@ -846,7 +875,8 @@ def extract_segments(html_text: str, url: str = "") -> tuple[str, list[dict]]:
       {"type": "image", "src": ..., "caption": ...}     — announced + show notes + chapter art
     Empty segment list means the caller should fall back to plain extraction.
     """
-    meta = trafilatura.extract_metadata(html_text, default_url=url or None)
+    html_text = fill_mentions(html_text)
+    meta =trafilatura.extract_metadata(html_text, default_url=url or None)
     title = ((meta.title if meta else "") or "").split(" | ")[0].strip()
 
     xml = trafilatura.extract(
