@@ -706,8 +706,15 @@ def _shownotes_header(label: str, link: str, byline: str = "") -> str:
     return line + "</p>"
 
 
+# Show-note budget per episode. Pocket Casts documents no limit; the real
+# constraint is total feed size, and only the newest feedgen.FULL_NOTES_ITEMS carry full
+# notes. Doubled from 24000 on 2026-11-10 (trial) so long, link-heavy posts are
+# not cut off half way.
+SHOW_NOTES_CHARS = 48000
+
+
 def _interleaved_shownotes(label: str, segments: list[dict], link: str,
-                           max_chars: int = 24000, byline: str = "") -> str:
+                           max_chars: int = SHOW_NOTES_CHARS, byline: str = "") -> str:
     """Full article as HTML with text, quotes and images in reading order, so
     the listener can scroll along. Image descriptions become captions."""
     parts = [_shownotes_header(label, link, byline)]
@@ -740,7 +747,7 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
         # Budget the RENDERED part, not the raw text: images were previously
         # free (a <figure> with a long CDN URL cost nothing), and escaping
         # turns one "&" into five characters. 92 of 711 episodes hit the
-        # downstream 25000-char slice; two of them were cut mid-tag.
+        # downstream slice (then 25000 chars); two of them were cut mid-tag.
         if used + len(part) + 1 > max_chars:
             parts.append("<p>…</p>")
             break
@@ -1564,7 +1571,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
                 ep.published_at = utcnow()
             # Belt and braces: _interleaved_shownotes already budgets on the
             # rendered length, so this only ever fires on an unforeseen shape.
-            ep.description = _safe_truncate_html(show_notes, 25000)
+            ep.description = _safe_truncate_html(show_notes, SHOW_NOTES_CHARS + 1000)
             ep.image_url = episode_image
             ep.script = json.dumps({"blocks": spoken_blocks}, ensure_ascii=False)
             ep.provenance = json.dumps(prov, ensure_ascii=False)
