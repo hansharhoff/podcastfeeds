@@ -41,6 +41,22 @@ def test_has_speech_rejects_chunks_with_nothing_to_pronounce():
         assert not has_speech(junk), junk
 
 
+def test_has_speech_needs_a_latin_letter_for_a_latin_script_voice():
+    """An English or Danish voice answers NoAudioReceived for text with no
+    Latin letter or digit, every time: a Japanese poem quoted in an ACX review
+    (ep. 780) failed eleven retries twice. Mixed text is fine."""
+    from app.tts import has_speech
+    for foreign in ("わくらばにゆきあふみちをたのみしも", "源氏物語", "Ελληνικά", "Привет мир"):
+        assert not has_speech(foreign, "en-AU-NatashaNeural"), foreign
+        assert not has_speech(foreign, "da-DK-JeppeNeural"), foreign
+    assert has_speech("The poem わくらばに reads well.", "en-US-AndrewNeural")
+    assert has_speech("Æble på øen", "da-DK-JeppeNeural")
+    assert has_speech("123", "en-US-AndrewNeural")
+    # a voice for that script can say it
+    assert has_speech("わくらばに", "ja-JP-NanamiNeural")
+    assert has_speech("Привет", "ru-RU-DmitryNeural")
+
+
 def test_scrub_light_strips_strikethrough_markers():
     from app.summarize import scrub_light
     assert scrub_light("~~struck out~~ but readable") == "struck out but readable"
@@ -95,5 +111,5 @@ def test_a_silent_block_does_not_open_a_zero_length_chapter():
 
     src = inspect.getsource(tts.synthesize_blocks)
     appended = src.index("chapters.append")
-    guarded = src.index("if not has_speech(chunk)")
+    guarded = src.index("if not has_speech(chunk")
     assert guarded < appended, "chapter must open only after a speakable chunk"

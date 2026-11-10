@@ -55,9 +55,29 @@ EDGE_FALLBACK_VOICE = "en-US-AndrewNeural"
 _SPEAKABLE = re.compile(r"[^\W_]", re.UNICODE)
 
 
-def has_speech(text: str) -> bool:
-    """Whether this text contains anything a voice could actually pronounce."""
-    return bool(_SPEAKABLE.search(text))
+# A Latin-script voice (English, Danish) also answers NoAudioReceived for text
+# with no Latin letter or digit: ep. 780 quoted a Japanese poem and failed
+# eleven retries on it, twice. Mixed text ("the poem わくらばに") is fine.
+_LATIN_SPEAKABLE = re.compile(r"[0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F]")
+_NON_LATIN_LANGS = {
+    "am", "ar", "bg", "bn", "el", "fa", "gu", "he", "hi", "hy", "ja", "ka",
+    "kk", "km", "kn", "ko", "lo", "mk", "ml", "mn", "mr", "my", "ne", "pa",
+    "ps", "ru", "si", "sr", "ta", "te", "th", "uk", "ur", "zh",
+}
+
+
+def has_speech(text: str, voice: str = "") -> bool:
+    """Whether this text contains anything the voice could actually pronounce.
+
+    Voices are Latin-script unless their locale says otherwise. ElevenLabs
+    voices count as Latin-script too, since they fall back to an edge voice
+    for the episode's own (English or Danish) language."""
+    if not _SPEAKABLE.search(text):
+        return False
+    lang = voice.split("-", 1)[0].lower() if "-" in voice and not voice.startswith("eleven:") else ""
+    if lang in _NON_LATIN_LANGS:
+        return True
+    return bool(_LATIN_SPEAKABLE.search(text))
 
 
 async def _synth_chunk(text: str, voice: str, out_path: Path, attempts: int = 11,
@@ -189,10 +209,10 @@ async def synthesize_blocks(
             # that ends where it begins.
             pending_chapter = b.get("chapter")
             for chunk in _split_text(text):
-                if not has_speech(chunk):
+                if not has_speech(chunk, b["voice"]):
                     # Punctuation-only leftovers (stray "~~", "---", bullets)
-                    # would fail the whole episode; there is nothing to lose by
-                    # dropping them.
+                    # and quotes in a script the voice cannot read would fail
+                    # the whole episode, so drop them.
                     log.info("skipping unspeakable chunk: %r", chunk[:40])
                     continue
                 if pending_chapter:
