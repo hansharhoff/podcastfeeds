@@ -960,3 +960,65 @@ def test_clean_html_segments_keep_mentioned_names():
 
     _, segs = segments_from_clean_html(_MENTION)
     assert any("Jerusalem Demsas is watching for:" in s.get("text", "") for s in segs)
+
+
+def test_clean_html_segments_keep_their_links():
+    from app.extract import segments_from_clean_html
+    html = (
+        '<p>See <a href="https://example.com/report">the report</a> and '
+        '<a href="#local">a jump</a> and <a href="mailto:x@y.z">mail</a>.</p>'
+        '<ul><li>Item with <a href="https://a.example/x">a link</a></li></ul>'
+        '<blockquote><p>Quoted <a href="https://q.example/">source</a></p></blockquote>'
+        '<h2>Head <a href="https://h.example/">here</a></h2>'
+    )
+    _, segs = segments_from_clean_html(html)
+    by_type = {}
+    for s in segs:
+        by_type.setdefault(s["type"], s)
+    assert by_type["text"]["links"] == [{"text": "the report", "href": "https://example.com/report"}]
+    li = [s for s in segs if s["type"] == "text"][1]
+    assert li["links"] == [{"text": "a link", "href": "https://a.example/x"}]
+    assert by_type["quote"]["links"] == [{"text": "source", "href": "https://q.example/"}]
+    assert by_type["heading"]["links"] == [{"text": "here", "href": "https://h.example/"}]
+
+
+def test_segment_without_links_has_no_links_key():
+    from app.extract import segments_from_clean_html
+    _, segs = segments_from_clean_html("<p>Plain text only.</p>")
+    assert segs == [{"type": "text", "text": "Plain text only."}]
+
+
+def test_footnote_links_survive():
+    from app.extract import segments_from_clean_html
+    html = (
+        '<p>Claim here.<a class="footnote-anchor" href="#footnote-1">1</a></p>'
+        '<div class="footnote"><a class="footnote-number" href="#footnote-anchor-1">1</a>'
+        '<div class="footnote-content"><p>Per <a href="https://src.example/">this source</a>.</p>'
+        '</div></div>'
+    )
+    _, segs = segments_from_clean_html(html)
+    note = [s for s in segs if s["type"] == "footnote"][0]
+    assert note["links"] == [{"text": "this source", "href": "https://src.example/"}]
+
+
+def test_trafilatura_segments_keep_their_links():
+    from app.extract import extract_segments
+    body = "".join(
+        f"<p>Paragraph {i} of a reasonably long article body with words in it, "
+        f"enough for extraction to keep. See <a href=\"https://ex.example/{i}\">link {i}</a> now.</p>"
+        for i in range(8)
+    )
+    html = f"<html><head><title>T</title></head><body><article>{body}</article></body></html>"
+    _, segs = extract_segments(html, "https://site.example/post")
+    texts = [s for s in segs if s["type"] == "text"]
+    assert texts and texts[0]["links"] == [{"text": "link 0", "href": "https://ex.example/0"}]
+    assert "link 0" in texts[0]["text"]
+
+
+def test_dialogue_and_question_marking_keep_links():
+    from app.extract import mark_dialogue
+    link = [{"text": "x", "href": "https://x.example/"}]
+    segs = [{"type": "text", "text": f"{who}: says x {i}", "links": link}
+            for i, who in enumerate(["Ann", "Bob", "Ann", "Bob"])]
+    out = mark_dialogue(segs)
+    assert all(s["type"] == "dialogue" and s["links"] == link for s in out)

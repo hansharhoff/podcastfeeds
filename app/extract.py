@@ -519,7 +519,30 @@ def _embed_segments(attrs: dict) -> list[dict]:
     return segments
 
 
-def _collect_footnotes(root) -> dict[str, str]:
+def _anchor_links(el, tag: str = "a", attr: str = "href") -> list[dict]:
+    """The web links inside `el` as [{"text", "href"}], in order, so the show
+    notes can link the same words. Only absolute http(s) targets: in-page
+    jumps and mailto links mean nothing in a podcast app."""
+    links: list[dict] = []
+    for a in el.iter(tag):
+        href = (a.get(attr) or "").strip()
+        text = " ".join("".join(a.itertext()).split())
+        if href.lower().startswith(("http://", "https://")) and text:
+            link = {"text": text, "href": href}
+            if link not in links:
+                links.append(link)
+    return links
+
+
+def _with_links(seg: dict, links: list[dict]) -> dict:
+    """Attach the links whose words appear in this segment (none: no key)."""
+    mine = [lk for lk in links if lk["text"] in seg["text"]]
+    if mine:
+        seg["links"] = mine
+    return seg
+
+
+def _collect_footnotes(root, note_links: dict | None = None) -> dict[str, str]:
     """{anchor id -> footnote prose}, removing the definition blocks from the tree.
 
     Substack renders the bodies in a block at the very END of the post:
@@ -538,12 +561,18 @@ def _collect_footnotes(root) -> dict[str, str]:
                 number = (a.text_content() or "").strip()
                 break
         content = ""
+        content_el = None
         for div in block.iter("div"):
             if "footnote-content" in (div.get("class", "") or ""):
                 content = " ".join(div.text_content().split())
+                content_el = div
                 break
         if number and content:
             notes[number] = content
+            if note_links is not None and content_el is not None:
+                links = _anchor_links(content_el)
+                if links:
+                    note_links[content] = links
         parent = block.getparent()
         if parent is not None:
             tail = block.tail or ""
@@ -599,24 +628,29 @@ def _sentence_cut(text: str, pos: int) -> int:
     return m.end() if m else len(text)
 
 
-def _paragraph_segments(text: str, refs: list[tuple[int, str]]) -> list[dict]:
+def _paragraph_segments(text: str, refs: list[tuple[int, str]],
+                        links: list[dict] | None = None,
+                        note_links: dict | None = None) -> list[dict]:
     """Paragraph text split so each footnote follows the sentence that cited it.
 
     Waiting for the end of the paragraph stranded a note several sentences from
     its referent on Zvi-length paragraphs; interrupting at the marker itself
     would break a sentence the listener is mid-way through (Hans, 2026-09-17)."""
     segments: list[dict] = []
+    links = links or []
+    note_links = note_links or {}
     cursor = 0
     for pos, note in sorted(refs):
         cut = _sentence_cut(text, max(pos, cursor))
         chunk = text[cursor:cut].strip()
         if chunk:
-            segments.append({"type": "text", "text": chunk})
-        segments.append({"type": "footnote", "text": note})
+            segments.append(_with_links({"type": "text", "text": chunk}, links))
+        segments.append(_with_links({"type": "footnote", "text": note},
+                                    note_links.get(note, [])))
         cursor = cut
     rest = text[cursor:].strip()
     if rest:
-        segments.append({"type": "text", "text": rest})
+        segments.append(_with_links({"type": "text", "text": rest}, links))
     return segments
 
 
@@ -767,7 +801,8 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
     HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
     # Pull the definitions out first so the anchors below can resolve them and
     # the block at the end of the post never surfaces as loose prose.
-    footnotes = _collect_footnotes(root)
+    note_links: dict[str, list[dict]] = {}
+    footnotes = _collect_footnotes(root, note_links)
 
     def is_image_block(el) -> bool:
         cls = el.get("class", "") or ""
@@ -805,6 +840,7 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             refs = _take_footnote_refs(li, footnotes)
             parts = [li.text or ""]
             blocks = []
+            links: list[dict] = []
             for sub in li:
                 if not isinstance(sub.tag, str):
                     continue
@@ -812,15 +848,17 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
                     blocks.append(sub)
                 else:
                     parts.append(sub.text_content())
+                    links.extend(lk for lk in _anchor_links(sub) if lk not in links)
                 parts.append(sub.tail or "")
             t = " ".join(p.strip() for p in parts if p and p.strip())
             if t:
-                segments.append({"type": "text", "text": t})
+                segments.append(_with_links({"type": "text", "text": t}, links))
             # A list item is one short unit and its text is rebuilt by joining
             # parts, so the offsets don't map onto it — the note follows the
             # whole item, which here already means "after the sentence".
             for _pos, note in refs:
-                segments.append({"type": "footnote", "text": note})
+                segments.append(_with_links({"type": "footnote", "text": note},
+                                            note_links.get(note, [])))
             for sub in blocks:
                 handle_child(sub)
 
@@ -834,11 +872,13 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
         elif tag in HEADINGS:
             t = child.text_content().strip()
             if t:
-                segments.append({"type": "heading", "text": t})
+                segments.append(_with_links({"type": "heading", "text": t},
+                                            _anchor_links(child)))
         elif tag == "blockquote":
             t = child.text_content().strip()
             if t:
-                segments.append({"type": "quote", "text": t})
+                segments.append(_with_links({"type": "quote", "text": t},
+                                            _anchor_links(child)))
         elif is_image_block(child):
             emit_image(child)
         elif tag == "p":
@@ -848,7 +888,8 @@ def segments_from_clean_html(body_html: str) -> tuple[str, list[dict]]:
             # sentence that cited it, which keeps it next to its referent
             # without breaking a sentence mid-flow.
             refs = _take_footnote_refs(child, footnotes)
-            segments.extend(_paragraph_segments(child.text_content(), refs))
+            segments.extend(_paragraph_segments(
+                child.text_content(), refs, _anchor_links(child), note_links))
             for img in child.iter("img"):
                 if img.get("src", "").startswith("http"):
                     segments.append({"type": "image", "src": img.get("src"), "caption": ""})
@@ -882,6 +923,7 @@ def extract_segments(html_text: str, url: str = "") -> tuple[str, list[dict]]:
     xml = trafilatura.extract(
         html_text, url=url or None, output_format="xml", include_images=True,
         include_comments=False, include_tables=False, favor_recall=True,
+        include_links=True,
     )
     if not xml:
         return title, []
@@ -919,17 +961,20 @@ def extract_segments(html_text: str, url: str = "") -> tuple[str, list[dict]]:
             elif child.tag == "quote":
                 t = text_of(child)
                 if t:
-                    segments.append({"type": "quote", "text": t})
+                    segments.append(_with_links({"type": "quote", "text": t},
+                                                _anchor_links(child, "ref", "target")))
                 add_graphics(child)
             elif child.tag == "head":
                 t = text_of(child)
                 if t and t != title:
-                    segments.append({"type": "heading", "text": t})
+                    segments.append(_with_links({"type": "heading", "text": t},
+                                                _anchor_links(child, "ref", "target")))
                 add_graphics(child)
             elif child.tag in ("p", "item"):
                 t = text_of(child)
                 if t and t != title:
-                    segments.append({"type": "text", "text": t})
+                    segments.append(_with_links({"type": "text", "text": t},
+                                                _anchor_links(child, "ref", "target")))
                 add_graphics(child)
             else:
                 walk(child)
@@ -971,12 +1016,12 @@ def mark_dialogue(segments: list[dict]) -> list[dict]:
             m = _DIALOGUE_RE.match(seg["text"])
             if m and m.group(1) in speakers:
                 current_speaker = m.group(1)
-                out.append({"type": "dialogue", "speaker": current_speaker,
-                            "text": m.group(2)})
+                out.append(_with_links({"type": "dialogue", "speaker": current_speaker,
+                                        "text": m.group(2)}, seg.get("links", [])))
             elif current_speaker is not None:
                 # Continuation of a multi-paragraph turn by the current speaker.
-                out.append({"type": "dialogue", "speaker": current_speaker,
-                            "text": seg["text"]})
+                out.append(_with_links({"type": "dialogue", "speaker": current_speaker,
+                                        "text": seg["text"]}, seg.get("links", [])))
             else:
                 out.append(seg)
         else:
@@ -1013,7 +1058,8 @@ def mark_qa(segments: list[dict]) -> list[dict]:
     if len(q_positions) < 3 or len(q_positions) < 0.15 * text_count:
         return segments  # not a mailbag — too few / too sparse questions
     return [
-        {"type": "question", "text": seg["text"]} if i in q_positions else seg
+        _with_links({"type": "question", "text": seg["text"]}, seg.get("links", []))
+        if i in q_positions else seg
         for i, seg in enumerate(segments)
     ]
 

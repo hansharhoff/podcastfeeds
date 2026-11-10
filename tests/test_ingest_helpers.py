@@ -1210,3 +1210,46 @@ def test_episode_intro_byline_keeps_the_preview_note():
     text = _episode_intro("T", "Src", "en", preview=True, bylines=["A"])
     assert text.startswith("T. By A, from Src, ")
     assert "free preview of a paid post" in text
+
+
+def test_show_notes_turn_anchor_text_into_links():
+    from app.ingest import _interleaved_shownotes
+    segs = [
+        {"type": "text", "text": "Read the report & weep.",
+         "links": [{"text": "the report", "href": "https://ex.example/r?a=1&b=2"}]},
+        {"type": "footnote", "text": "See source.",
+         "links": [{"text": "source", "href": "https://s.example/"}]},
+    ]
+    notes = _interleaved_shownotes("Src", segs, "https://example.com")
+    assert '<p>Read <a href="https://ex.example/r?a=1&amp;b=2">the report</a> &amp; weep.</p>' in notes
+    assert '<a href="https://s.example/">source</a>' in notes
+
+
+def test_show_notes_link_bare_urls_without_trailing_punctuation():
+    from app.ingest import _linkify
+    out = _linkify("Go to https://ex.example/a_b. Or (https://y.example/z).")
+    assert '<a href="https://ex.example/a_b">https://ex.example/a_b</a>.' in out
+    assert '(<a href="https://y.example/z">https://y.example/z</a>).' in out
+
+
+def test_linkify_escapes_and_ignores_unsafe_or_missing_anchors():
+    from app.ingest import _linkify
+    out = _linkify("<b>hi</b> there", [
+        {"text": "missing", "href": "https://m.example/"},
+        {"text": "there", "href": "javascript:alert(1)"},
+    ])
+    assert out == "&lt;b&gt;hi&lt;/b&gt; there"
+
+
+def test_linkify_does_not_nest_a_bare_url_inside_an_anchor():
+    from app.ingest import _linkify
+    out = _linkify("visit https://a.example/ today",
+                   [{"text": "https://a.example/", "href": "https://a.example/"}])
+    assert out.count("<a ") == 1
+
+
+def test_plain_text_paths_link_bare_urls():
+    from app.ingest import _plain_shownotes
+    out = _plain_shownotes("line one https://x.example/\n\nline two")
+    assert out == ('<p>line one <a href="https://x.example/">https://x.example/</a></p>'
+                   "<p>line two</p>")

@@ -648,6 +648,55 @@ def _source_label(source: SourceDef, link: str) -> str:
     return source.name
 
 
+_BARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.I)
+_URL_TRAILING = ".,;:!?)]}'\""
+
+
+def _linkify(text: str, links: list[dict] | None = None) -> str:
+    """Escape `text` for show notes, turning the article's own links into <a>.
+
+    `links` are the anchors the extractor found ({"text", "href"}): the first
+    occurrence of each anchor's words gets its href. Bare http(s) URLs in the
+    text are linked too, minus trailing punctuation. Anything else (unsafe
+    schemes, words that are not in the text) stays plain text."""
+    spans: list[tuple[int, int, str]] = []
+
+    def free(a: int, b: int) -> bool:
+        return all(b <= s0 or a >= e0 for s0, e0, _ in spans)
+
+    for lk in sorted(links or [], key=lambda lk: -len(lk.get("text", ""))):
+        words, href = lk.get("text", ""), lk.get("href", "")
+        if not words or not href.lower().startswith(("http://", "https://")):
+            continue
+        start = 0
+        while (i := text.find(words, start)) >= 0:
+            if free(i, i + len(words)):
+                spans.append((i, i + len(words), href))
+                break
+            start = i + 1
+    for m in _BARE_URL_RE.finditer(text):
+        url = m.group(0).rstrip(_URL_TRAILING)
+        # A ")" that closes a "(" inside the URL belongs to it (Wikipedia).
+        if m.group(0)[len(url):].startswith(")") and url.count("(") > url.count(")"):
+            url += ")"
+        a, b = m.start(), m.start() + len(url)
+        if len(url) > len("https://") and free(a, b):
+            spans.append((a, b, url))
+    out, pos = [], 0
+    for a, b, href in sorted(spans):
+        out.append(_html_escape(text[pos:a]))
+        out.append(f'<a href="{_attr(href)}">{_html_escape(text[a:b])}</a>')
+        pos = b
+    out.append(_html_escape(text[pos:]))
+    return "".join(out)
+
+
+def _plain_shownotes(text: str) -> str:
+    """Plain text as show-note paragraphs, one per non-blank line, with any
+    URLs in it clickable."""
+    return "".join(f"<p>{_linkify(ln)}</p>" for ln in text.split("\n") if ln.strip())
+
+
 def _shownotes_header(label: str, link: str, byline: str = "") -> str:
     line = f"<p><strong>Source: {_html_escape(label)}</strong>"
     if byline:
@@ -666,19 +715,21 @@ def _interleaved_shownotes(label: str, segments: list[dict], link: str,
     for seg in segments:
         if seg["type"] in ("text", "dialogue") and is_cruft_line(seg["text"]):
             continue
+        if seg["type"] != "image":
+            body = _linkify(seg["text"], seg.get("links"))
         if seg["type"] == "text":
-            part = f"<p>{_html_escape(seg['text'])}</p>"
+            part = f"<p>{body}</p>"
         elif seg["type"] == "question":
-            part = f"<p><strong>Q: {_html_escape(seg['text'])}</strong></p>"
+            part = f"<p><strong>Q: {body}</strong></p>"
         elif seg["type"] == "dialogue":
             part = (f"<p><strong>{_html_escape(seg['speaker'])}:</strong> "
-                    f"{_html_escape(seg['text'])}</p>")
+                    f"{body}</p>")
         elif seg["type"] == "heading":
-            part = f"<h3>{_html_escape(seg['text'])}</h3>"
+            part = f"<h3>{body}</h3>"
         elif seg["type"] == "quote":
-            part = f"<blockquote>{_html_escape(seg['text'])}</blockquote>"
+            part = f"<blockquote>{body}</blockquote>"
         elif seg["type"] == "footnote":
-            part = f"<p><small><em>Footnote: {_html_escape(seg['text'])}</em></small></p>"
+            part = f"<p><small><em>Footnote: {body}</em></small></p>"
         elif seg["type"] == "image":
             cap = seg.get("caption") or seg.get("description") or ""
             figcap = f"<figcaption>{_html_escape(cap)}</figcaption>" if cap else ""
@@ -1306,7 +1357,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             # source text verbatim and point at the show notes.
             script = f"{intro}\n\n{scrub_light(body)}\n\n{outro(False)}"
             show_notes = _shownotes_header(source_label, link, by_line) + \
-                f"<p>{_html_escape(body[:800])}</p>"
+                f"<p>{_linkify(body[:800])}</p>"
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "verbatim-short", "voices": {"main": voice},
                          "generator": "extract", "scrub": "light",
@@ -1320,7 +1371,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             script, notes, gen_prov = await article_summary(title, body, language, link)
             script = f"{intro}\n\n{script}\n\n{outro(False)}"
             show_notes = _shownotes_header(source_label, link, by_line) + \
-                "".join(f"<p>{_html_escape(ln)}</p>" for ln in notes.split("\n") if ln.strip())
+                _plain_shownotes(notes)
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "summary", "voices": {"main": voice}, **gen_prov})
             async with _tts_lock:
@@ -1463,7 +1514,7 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
             spoken = body if course and course.get("verbatim") else scrub_light(body)
             script = f"{intro}\n\n{spoken}\n\n{outro(False)}"
             show_notes = _shownotes_header(source_label, link, by_line) + \
-                "".join(f"<p>{_html_escape(p)}</p>" for p in body.split("\n") if p.strip())
+                _plain_shownotes(body)
             spoken_blocks = [{"voice": voice, "text": script}]
             prov.update({"path": "plain", "voices": {"main": voice},
                          "generator": "extract", "scrub": "light"})
@@ -1476,8 +1527,8 @@ async def process_episode(ep_id: int, source: SourceDef) -> None:
         if course and not link:
             # Notes, then the full transcript: the listener can read along or
             # look something up later. A script part has no images to add.
-            show_notes = course_show_notes(course) + "\n<h3>Transcript</h3>\n" + "".join(
-                f"<p>{_html_escape(p)}</p>" for p in body.split("\n") if p.strip())
+            show_notes = (course_show_notes(course) + "\n<h3>Transcript</h3>\n"
+                          + _plain_shownotes(body))
         elif course:
             # Course header and notes first, so the length cap can only ever
             # trim the chapter's text and images below them.
