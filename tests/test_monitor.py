@@ -157,6 +157,48 @@ def test_slow_polling_sources_get_more_slack(monkeypatch):
     assert monitor.check_polls() == []
 
 
+def _rss_sources(monkeypatch, n=4):
+    from app.config import AppConfig, SourceDef
+
+    srcs = [SourceDef(slug=f"net-{i}", name=f"Net {i}", type="rss",
+                      url=f"https://n{i}.example/feed") for i in range(n)]
+    monkeypatch.setattr(monitor, "load_config", lambda: AppConfig(sources=srcs))
+    return srcs
+
+
+def test_every_feed_failing_for_hours_is_a_network_problem(monkeypatch):
+    """18 Nov 2026: DNS was gone for 18 hours, every feed failed, and nothing
+    alerted because each feed alone was under its 24-hour threshold."""
+    _rss_sources(monkeypatch)
+    for i in range(4):
+        _age(f"poll:net-{i}", hours=4, ok=True, fails=2, detail="could not resolve host")
+    [p] = monitor.check_network()
+    assert p["key"] == "network" and "4 feeds" in p["summary"]
+    assert "could not resolve host" in p["detail"]
+
+
+def test_all_feeds_failing_briefly_is_not_yet_a_problem(monkeypatch):
+    _rss_sources(monkeypatch)
+    for i in range(4):
+        _age(f"poll:net-{i}", hours=1, ok=True, fails=1)
+    assert monitor.check_network() == []
+
+
+def test_one_healthy_feed_means_the_network_is_up(monkeypatch):
+    _rss_sources(monkeypatch)
+    for i in range(3):
+        _age(f"poll:net-{i}", hours=6, ok=True, fails=3)
+    _age("poll:net-3", hours=0, ok=True, fails=0)
+    assert monitor.check_network() == []
+
+
+def test_network_check_needs_a_few_feeds_to_judge(monkeypatch):
+    _rss_sources(monkeypatch, n=2)
+    for i in range(2):
+        _age(f"poll:net-{i}", hours=6, ok=True, fails=3)
+    assert monitor.check_network() == []
+
+
 # ── LLM, TickTick, podcast app, disk ────────────────────────────────────────
 
 def test_llm_down_for_half_a_day_is_a_problem():

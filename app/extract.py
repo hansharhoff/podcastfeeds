@@ -55,13 +55,29 @@ def _blocked_target(url: str) -> bool:
     return False
 
 
+def _refusal(url: str) -> str:
+    """Why _blocked_target() refused `url`, for the log. An unresolvable host is
+    refused too, but saying "non-public address" for it sent the 18 Nov 2026
+    debugging the wrong way: that day the container had lost DNS altogether."""
+    import socket
+    from urllib.parse import urlparse
+
+    host = urlparse(url).hostname
+    if host:
+        try:
+            socket.getaddrinfo(host, None)
+        except Exception:
+            return f"could not resolve host (DNS failure?): {url}"
+    return f"refusing to fetch non-public address: {url}"
+
+
 class BlockedTarget(RuntimeError):
-    """A request — or one of its redirect hops — pointed at a non-public address."""
+    """A request (or one of its redirect hops) was refused: non-public or unresolvable."""
 
 
 async def _guard_hop(request) -> None:
     if _blocked_target(str(request.url)):
-        raise BlockedTarget(f"refusing to fetch non-public address: {request.url}")
+        raise BlockedTarget(_refusal(str(request.url)))
 
 
 def _client(**kwargs) -> httpx.AsyncClient:
@@ -255,7 +271,7 @@ def _cookie_for(url: str) -> str:
 
 async def fetch_html(url: str) -> str:
     if _blocked_target(url):
-        raise RuntimeError(f"refusing to fetch non-public address: {url}")
+        raise RuntimeError(_refusal(url))
     headers = {"User-Agent": UA}
     cookie = _cookie_for(url)
     if cookie:
@@ -346,7 +362,7 @@ async def fetch_pdf(url: str) -> tuple[str, str]:
     """Download a PDF, returning (title, text). Queue-approved PDFs only — the
     RSS-side skip in ingest.process_episode stays."""
     if _blocked_target(url):
-        raise RuntimeError(f"refusing to fetch non-public address: {url}")
+        raise RuntimeError(_refusal(url))
     headers = {"User-Agent": UA}
     async with _client(
         timeout=120, headers=headers
@@ -1084,7 +1100,7 @@ async def fetch_image_jpeg(url: str, max_px: int = 1000) -> bytes | None:
     """Download an image and normalize it to a reasonably-sized JPEG
     (used as embedded chapter art)."""
     if _blocked_target(url):
-        log.warning("refusing to fetch image from non-public address: %s", url)
+        log.warning("image not fetched: %s", _refusal(url))
         return None
     try:
         async with _client(timeout=30, headers={"User-Agent": UA}) as client:

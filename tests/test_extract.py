@@ -1022,3 +1022,19 @@ def test_dialogue_and_question_marking_keep_links():
             for i, who in enumerate(["Ann", "Bob", "Ann", "Bob"])]
     out = mark_dialogue(segs)
     assert all(s["type"] == "dialogue" and s["links"] == link for s in out)
+
+
+def test_refusal_names_a_dns_failure_as_such(monkeypatch):
+    """18 Nov 2026: the container lost DNS for 18 hours and every fetch was
+    logged as "refusing to fetch non-public address", which pointed at the
+    SSRF guard instead of the network."""
+    import socket
+
+    from app import extract
+
+    def no_dns(*a, **k):
+        raise socket.gaierror(-3, "Temporary failure in name resolution")
+    monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+    assert "could not resolve host" in extract._refusal("https://example.com/feed")
+    monkeypatch.undo()
+    assert "non-public address" in extract._refusal("http://127.0.0.1/x")
