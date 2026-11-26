@@ -146,3 +146,43 @@ def test_a_retried_old_episode_is_not_stuck_while_it_runs():
         ep_id = ep.id
     note_started(ep_id)
     assert "Retried" not in [e["title"] for e in stuck_episodes(max_age_hours=12)]
+
+
+def test_newest_paid_slug_reads_the_wrapped_archive_shape():
+    """Substack's archive API began returning {"posts": [...], "nextCursor"}
+    instead of a bare list (seen 2026-11), and the check silently stopped
+    testing every paid source."""
+    wrapped = {"posts": [{"audience": "everyone", "slug": "free"},
+                         {"audience": "only_paid", "slug": "paid"}],
+               "nextCursor": "abc"}
+    assert newest_paid_slug(wrapped) == "paid"
+    assert newest_paid_slug({"unexpected": 1}) is None
+
+
+def test_sources_with_no_testable_post_are_listed_as_unverified(monkeypatch):
+    from types import SimpleNamespace
+
+    from app import health
+
+    sources = [SimpleNamespace(slug="noahpinion", name="Noahpinion", type="rss",
+                               url="https://noahpinion.substack.com/feed", paid=True)]
+    monkeypatch.setattr(health, "load_config", lambda: SimpleNamespace(sources=sources))
+
+    async def fake_api(url, cookie_url=None):
+        return {"posts": [{"audience": "everyone", "slug": "free"}]}
+    monkeypatch.setattr(health, "_api_json", fake_api)
+
+    snapshot = _run(check_paid_access())
+    assert snapshot["results"] == [] and snapshot["unverified"] == ["Noahpinion"]
+
+
+def test_monitor_flags_a_paid_check_that_can_test_nothing(monkeypatch):
+    from app import health, monitor
+
+    monkeypatch.setitem(health.LAST, "results", [])
+    monkeypatch.setitem(health.LAST, "unverified", ["Noahpinion", "Slow Boring"])
+    [p] = monitor.check_paid_access()
+    assert p["key"] == "paid-access-unverified" and "Noahpinion" in p["summary"]
+    # one verified source is enough: a quiet newsletter is not a broken check
+    monkeypatch.setitem(health.LAST, "results", [{"name": "X", "ok": True}])
+    assert monitor.check_paid_access() == []

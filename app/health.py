@@ -27,10 +27,17 @@ log = logging.getLogger("podcastfeeds")
 LAST: dict = {"checked_at": "", "results": []}
 
 
-def newest_paid_slug(archive_items: list | None) -> str | None:
+def newest_paid_slug(archive_items: list | dict | None) -> str | None:
     """First (newest) archive item that is not free — the natural probe target.
-    Self-maintaining: no hardcoded slugs to rot as posts age."""
-    for item in archive_items or []:
+    Self-maintaining: no hardcoded slugs to rot as posts age.
+
+    Takes the archive response as Substack sends it: a bare list, or (since
+    2026-11) {"posts": [...], "nextCursor": ...}."""
+    if isinstance(archive_items, dict):
+        archive_items = archive_items.get("posts")
+    if not isinstance(archive_items, list):
+        return None
+    for item in archive_items:
         if (item.get("audience") or "everyone") != "everyone" and item.get("slug"):
             return item["slug"]
     return None
@@ -91,6 +98,7 @@ def stuck_episodes(max_age_hours: int = 12) -> list[dict]:
 async def check_paid_access() -> dict:
     """Probe each paid substack source's newest paid post; update LAST."""
     results: list[dict] = []
+    unverified: list[str] = []
     for source in load_config().sources:
         if not source.paid or source.type != "rss":
             continue
@@ -100,9 +108,10 @@ async def check_paid_access() -> dict:
         sub = feed_host[: -len(".substack.com")]
         archive = await _api_json(
             f"https://{sub}.substack.com/api/v1/archive?sort=new&limit=20")
-        slug = newest_paid_slug(archive if isinstance(archive, list) else None)
+        slug = newest_paid_slug(archive)
         if not slug:
             log.warning("paid-access check: no paid post found in %s archive", sub)
+            unverified.append(source.name)
             continue
         post = await fetch_post(sub, slug)
         ok = bool(post and post["accessible"])
@@ -120,4 +129,5 @@ async def check_paid_access() -> dict:
                 post["wordcount"] if post else 0)
     LAST["checked_at"] = utcnow().strftime("%Y-%m-%d %H:%M UTC")
     LAST["results"] = results
+    LAST["unverified"] = unverified
     return LAST

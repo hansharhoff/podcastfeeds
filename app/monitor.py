@@ -44,6 +44,8 @@ MIN_ERRORS = 3                      # and at least as many errors as successes
 NOTHING_NEW_AFTER = timedelta(hours=36)
 POLL_STALE_MIN = timedelta(hours=24)
 POLL_STALE_INTERVALS = 6            # or six missed poll intervals, if longer
+NETWORK_DOWN_AFTER = timedelta(hours=3)  # every feed failing at once
+NETWORK_MIN_FEEDS = 3               # too few feeds to tell a network from a blip
 LLM_DOWN_AFTER = timedelta(hours=12)
 TICKTICK_DOWN_AFTER = timedelta(hours=24)
 PODCAST_APP_SILENT_AFTER = timedelta(hours=24)
@@ -177,6 +179,14 @@ def check_paid_access() -> list[dict]:
     from .health import LAST as paid
 
     broken = [r["name"] for r in paid.get("results", []) if not r.get("ok")]
+    unverified = paid.get("unverified", [])
+    if not broken and unverified and not paid.get("results"):
+        # Not one paid source could be tested: the check itself is broken
+        # (Substack changed its archive response in 2026-11 and this went
+        # unnoticed), so expired access would go unseen too.
+        return [{"key": "paid-access-unverified",
+                 "summary": "Paid-access check could not test any source: " + ", ".join(unverified),
+                 "detail": "No paid post found in any archive; the Substack API may have changed."}]
     if not broken:
         return []
     return [{"key": "paid-access",
@@ -202,6 +212,27 @@ def check_polls() -> list[dict]:
                 "summary": f"{source.name}: feed failing for {_hours(now - since)}",
                 "detail": state.get("detail", "")})
     return problems
+
+
+def check_network() -> list[dict]:
+    """Every feed failing at once means the network or DNS is down, not the
+    feeds. 18 Nov 2026: DNS was gone for 18 hours and nothing alerted, because
+    each feed alone stayed under its own 24-hour threshold."""
+    now = _now()
+    states = [_state(f"poll:{s.slug}") for s in load_config().sources if s.type == "rss"]
+    states = [st for st in states if st]
+    if len(states) < NETWORK_MIN_FEEDS:
+        return []
+    for st in states:
+        last_ok = _parse(st.get("last_ok", ""))
+        if not st.get("fails_in_row", 0) or (last_ok and now - last_ok < NETWORK_DOWN_AFTER):
+            return []
+    newest_ok = max((_parse(st.get("last_ok", "")) for st in states
+                     if st.get("last_ok")), default=None)
+    age = f" for {_hours(now - newest_ok)}" if newest_ok else ""
+    return [{"key": "network",
+             "summary": f"All {len(states)} feeds failing{age}: network or DNS down?",
+             "detail": states[0].get("detail", "")}]
 
 
 def _down_check(component: str, after: timedelta, key: str, label: str,
@@ -256,7 +287,7 @@ def check_disk() -> list[dict]:
 
 
 CHECKS = (check_episode_errors, check_nothing_new, check_stuck, check_paid_access,
-          check_polls, check_llm, check_ticktick, check_podcast_app, check_disk)
+          check_polls, check_network, check_llm, check_ticktick, check_podcast_app, check_disk)
 
 
 def run_checks() -> list[dict]:
