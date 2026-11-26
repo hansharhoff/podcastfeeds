@@ -27,6 +27,9 @@ log = logging.getLogger("podcastfeeds")
 LAST: dict = {"checked_at": "", "results": []}
 
 
+MIN_PROBE_WORDS = 300
+
+
 def newest_paid_slug(archive_items: list | dict | None) -> str | None:
     """First (newest) archive item that is not free — the natural probe target.
     Self-maintaining: no hardcoded slugs to rot as posts age.
@@ -38,8 +41,14 @@ def newest_paid_slug(archive_items: list | dict | None) -> str | None:
     if not isinstance(archive_items, list):
         return None
     for item in archive_items:
-        if (item.get("audience") or "everyone") != "everyone" and item.get("slug"):
-            return item["slug"]
+        if (item.get("audience") or "everyone") == "everyone" or not item.get("slug"):
+            continue
+        # A paid "discussion post" of 28 words is shown whole even as a teaser,
+        # so it would pass with a dead cookie. Probe a real article instead.
+        words = item.get("wordcount")
+        if isinstance(words, int) and words < MIN_PROBE_WORDS:
+            continue
+        return item["slug"]
     return None
 
 

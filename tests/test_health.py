@@ -186,3 +186,14 @@ def test_monitor_flags_a_paid_check_that_can_test_nothing(monkeypatch):
     # one verified source is enough: a quiet newsletter is not a broken check
     monkeypatch.setitem(health.LAST, "results", [{"name": "X", "ok": True}])
     assert monitor.check_paid_access() == []
+
+
+def test_newest_paid_slug_skips_posts_too_short_to_prove_access():
+    """Slow Boring's paid 'discussion posts' have 0 to 28 words; a teaser of a
+    28-word post is the whole post, so it proves nothing about the cookie."""
+    items = [{"audience": "only_paid", "slug": "thread", "wordcount": 0},
+             {"audience": "only_paid", "slug": "discussion", "wordcount": 28},
+             {"audience": "only_paid", "slug": "essay", "wordcount": 1996}]
+    assert newest_paid_slug(items) == "essay"
+    # no wordcount field: still usable
+    assert newest_paid_slug([{"audience": "only_paid", "slug": "x"}]) == "x"
